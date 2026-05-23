@@ -1,8 +1,8 @@
 Option Explicit
 
 ' ================= CONFIG =================
-Const DUMP_FILE_PATH As String = "C:\Users\tanua\OneDrive\Documents\Office Email Automation\DumpFile.xls"
-Const DUMP_SHEET_NAME As String = "Sheet1"
+Const DUMP_FILE_PATH As String = "C:\Users\tanua\OneDrive\Documents\Office Email Automation\Dumpfile.xls"
+Const DUMP_SHEET_NAME As String = "Report"
 Const MASTER_SHEET As String = "Master_Data"
 Const CARRIER_SHEET As String = "Carrier Email Database"
 Const EXCEPTION_SHEET As String = "Exceptional_carriers_customers"
@@ -449,7 +449,7 @@ Private Function MatchAccount(ac As Object, wanted As String) As Boolean
 
     On Error Resume Next
     smtp = Trim(CStr(ac.SmtpAddress))
-    displayName = Trim(CStr(ac.displayName))
+    displayName = Trim(CStr(ac.DisplayName))
     On Error GoTo 0
 
     MatchAccount = False
@@ -639,7 +639,7 @@ Private Function GetLoadNumericKey(loadNo As String) As Long
     If loadNo = "" Then Exit Function
 
     If IsNumeric(loadNo) Then
-        GetLoadNumericKey = CLng(val(loadNo))
+        GetLoadNumericKey = CLng(Val(loadNo))
         Exit Function
     End If
 
@@ -648,7 +648,7 @@ Private Function GetLoadNumericKey(loadNo As String) As Long
         If c >= "0" And c <= "9" Then digits = digits & c
     Next i
 
-    If digits <> "" Then GetLoadNumericKey = CLng(val(digits))
+    If digits <> "" Then GetLoadNumericKey = CLng(Val(digits))
 End Function
 
 Private Function FormatPickupDateTime(eventTime As Date) As String
@@ -678,7 +678,5 @@ Private Function GetReminderBody(loadNo As String, eventTime As Date) As String
         GetReminderBody = "Please confirm the driver has picked up load scheduled on " & pickupAt & "."
     End If
 End Function
-
-
 
 
