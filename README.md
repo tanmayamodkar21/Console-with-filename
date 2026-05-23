@@ -1,0 +1,634 @@
+Option Explicit
+
+' ================= CONFIG =================
+Const DUMP_FILE_PATH As String = "C:\Users\tanua\OneDrive\Documents\Office Email Automation\DumpFile.xls"
+Const DUMP_SHEET_NAME As String = "Sheet1"
+Const MASTER_SHEET As String = "Master_Data"
+Const CARRIER_SHEET As String = "Carrier Email Database"
+Const EXCEPTION_SHEET As String = "Exceptional_carriers_customers"
+Const SETTING_SHEET As String = "Setting"
+Const PRECHECK_WINDOW_HOURS As Double = 3 / 24
+Const MY_EMAIL As String = "tanuamodkar@3ygjrx.onmicrosoft.com"
+' ==========================================
+
+Sub Run_Full_Pipeline()
+    Import_Dump
+    Process_Emails
+    MsgBox "Automation Completed", vbInformation
+End Sub
+
+' =====================================================
+' IMPORT
+' =====================================================
+Sub Import_Dump()
+
+    Dim wb As Workbook, wsDump As Worksheet, wsMaster As Worksheet
+    Dim lastRow As Long, nextMasterRow As Long, i As Long
+    Dim loadNo As String
+    Dim existingRow As Long
+
+    Set wsMaster = ThisWorkbook.Sheets(MASTER_SHEET)
+    Set wb = Workbooks.Open(DUMP_FILE_PATH, ReadOnly:=True)
+    Set wsDump = wb.Sheets(DUMP_SHEET_NAME)
+
+    lastRow = wsDump.Cells(wsDump.Rows.Count, "B").End(xlUp).Row
+    nextMasterRow = wsMaster.Cells(wsMaster.Rows.Count, "B").End(xlUp).Row + 1
+
+    For i = 2 To lastRow
+
+        loadNo = Trim(Split(wsDump.Cells(i, "B").Value, " ")(0))
+        If loadNo = "" Then GoTo ContinueLoop
+
+        existingRow = FindMasterRowByLoad(wsMaster, loadNo)
+        If existingRow > 0 Then
+            ' Refresh key fields for existing loads to fix stale/wrong date values.
+            wsMaster.Cells(existingRow, "A").Value = wsDump.Cells(i, "A").Value
+            wsMaster.Cells(existingRow, "C").Value = wsDump.Cells(i, "L").Value
+            wsMaster.Cells(existingRow, "D").Value = wsDump.Cells(i, "M").Value
+            wsMaster.Cells(existingRow, "E").Value = Trim(wsDump.Cells(i, "Z").Text)
+            wsMaster.Cells(existingRow, "F").Value = Trim(wsDump.Cells(i, "AA").Text)
+            wsMaster.Cells(existingRow, "G").Value = wsDump.Cells(i, "V").Value
+            wsMaster.Cells(existingRow, "H").Value = wsDump.Cells(i, "W").Value
+            wsMaster.Cells(existingRow, "I").Value = wsDump.Cells(i, "AK").Value
+            wsMaster.Cells(existingRow, "J").Value = wsDump.Cells(i, "AL").Value
+            GoTo ContinueLoop
+        End If
+
+        wsMaster.Cells(nextMasterRow, "A").Value = wsDump.Cells(i, "A").Value
+        wsMaster.Cells(nextMasterRow, "B").Value = loadNo
+        wsMaster.Cells(nextMasterRow, "C").Value = wsDump.Cells(i, "L").Value
+        wsMaster.Cells(nextMasterRow, "D").Value = wsDump.Cells(i, "M").Value
+        wsMaster.Cells(nextMasterRow, "E").Value = Trim(wsDump.Cells(i, "Z").Text)
+        ' Keep the displayed text so locale conversion does not flip MM/DD.
+        wsMaster.Cells(nextMasterRow, "F").Value = Trim(wsDump.Cells(i, "AA").Text)
+        wsMaster.Cells(nextMasterRow, "G").Value = wsDump.Cells(i, "V").Value
+        wsMaster.Cells(nextMasterRow, "H").Value = wsDump.Cells(i, "W").Value
+        wsMaster.Cells(nextMasterRow, "I").Value = wsDump.Cells(i, "AK").Value
+        wsMaster.Cells(nextMasterRow, "J").Value = wsDump.Cells(i, "AL").Value
+
+        wsMaster.Cells(nextMasterRow, "K").Value = "No"
+        wsMaster.Cells(nextMasterRow, "L").Value = ""
+        wsMaster.Cells(nextMasterRow, "M").Value = "No"
+        wsMaster.Cells(nextMasterRow, "N").Value = "No"
+        wsMaster.Cells(nextMasterRow, "O").Value = "Not Checked"
+        wsMaster.Cells(nextMasterRow, "P").Value = "Not Checked"
+        wsMaster.Cells(nextMasterRow, "Q").Value = ""
+
+        nextMasterRow = nextMasterRow + 1
+
+ContinueLoop:
+    Next i
+
+    wb.Close False
+
+End Sub
+
+Function Exists(ws As Worksheet, val As String) As Boolean
+    Exists = Not ws.Columns("B").Find(val, LookAt:=xlWhole) Is Nothing
+End Function
+
+Function FindMasterRowByLoad(ws As Worksheet, loadNo As String) As Long
+    Dim r As Range
+    Set r = ws.Columns("B").Find(loadNo, LookAt:=xlWhole)
+    If r Is Nothing Then
+        FindMasterRowByLoad = 0
+    Else
+        FindMasterRowByLoad = r.Row
+    End If
+End Function
+
+' =====================================================
+' MAIN LOGIC
+' =====================================================
+Sub Process_Emails()
+
+    Dim ws As Worksheet, wsCarrier As Worksheet, wsTZ As Worksheet, wsException As Worksheet
+    Dim i As Long, lastRow As Long
+    Dim loadNo As String, scac As String, custName As String
+    Dim origCity As String, origState As String, zoneCode As String
+    Dim eventTime As Date, nowTime As Date
+    Dim email As String
+    Dim precheck As String, reminder As String
+    Dim reply As String
+    Dim existing As Object, chainStatus As String
+    Dim sendNow As Boolean
+    Dim debugMsg As String
+
+    Set ws = ThisWorkbook.Sheets(MASTER_SHEET)
+    Set wsCarrier = ThisWorkbook.Sheets(CARRIER_SHEET)
+    Set wsTZ = ThisWorkbook.Sheets(3)
+    Set wsException = ThisWorkbook.Sheets(EXCEPTION_SHEET)
+
+    If Not ValidateSettings() Then Exit Sub
+
+    sendNow = ShouldSendEmails()
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+
+    For i = 2 To lastRow
+
+        debugMsg = ""
+
+        loadNo = ws.Cells(i, "B").Value
+        scac = ws.Cells(i, "C").Value
+        custName = ws.Cells(i, "A").Value
+        origCity = ws.Cells(i, "G").Value
+        origState = ws.Cells(i, "H").Value
+
+        precheck = LCase(Trim(ws.Cells(i, "M").Value))
+        reminder = LCase(Trim(ws.Cells(i, "N").Value))
+
+        If IsExceptional(wsException, scac, custName) Then
+            ws.Cells(i, "Q").Value = "Skipped: Exceptional Carrier/Customer"
+            GoTo NextRow
+        End If
+
+        ' Use only Start Time from column E for all timing decisions.
+        eventTime = SafeConvert(ws.Cells(i, "E").Text)
+        If eventTime = 0 Then
+            ws.Cells(i, "Q").Value = "Invalid Start Date Conversion"
+            GoTo NextRow
+        End If
+
+        zoneCode = GetTimezoneCode(wsTZ, origCity, origState)
+        If zoneCode = "" Then
+            ws.Cells(i, "Q").Value = "No Timezone Found"
+            GoTo NextRow
+        End If
+        nowTime = GetNowForZoneFromEST(zoneCode)
+
+        email = GetCarrierEmail(wsCarrier, scac)
+        If email = "" Then
+            ws.Cells(i, "Q").Value = "No Email Found"
+            GoTo NextRow
+        End If
+
+        ' Check existing chain
+        Set existing = GetExistingMail(loadNo)
+        If Not existing Is Nothing Then
+            chainStatus = "yes"
+        Else
+            chainStatus = "no"
+        End If
+        ws.Cells(i, "P").Value = UCase(chainStatus)
+
+        ' Reply check
+        reply = CheckReply(loadNo)
+        ws.Cells(i, "O").Value = reply
+
+        If reply = "Reply Received" Then
+            ws.Cells(i, "Q").Value = "Stopped: Reply Received"
+            GoTo NextRow
+        End If
+
+        ' If 2nd check already sent earlier, keep stable status and stop.
+        If reminder = "yes" Then
+            ws.Cells(i, "Q").Value = "2nd Check Already Sent | TZ=" & zoneCode
+            GoTo NextRow
+        End If
+
+        ' Manual protection
+        If chainStatus = "yes" And precheck <> "yes" And reminder <> "yes" Then
+            ws.Cells(i, "Q").Value = "Stopped: Manual Email Exists"
+            GoTo NextRow
+        End If
+
+        ' PRECHECK
+        If eventTime >= nowTime And eventTime <= nowTime + PRECHECK_WINDOW_HOURS Then
+            If precheck <> "yes" Then
+                SendMail loadNo, email, eventTime, False
+                ws.Cells(i, "M").Value = "Yes"
+                ws.Cells(i, "K").Value = "Yes"
+                ws.Cells(i, "L").Value = nowTime
+                If sendNow Then
+                    ws.Cells(i, "Q").Value = "Precheck Sent | TZ=" & zoneCode & _
+                                             " | SentAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                Else
+                    ws.Cells(i, "Q").Value = "Precheck email drafted | TZ=" & zoneCode & _
+                                             " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                End If
+                GoTo NextRow
+            Else
+                ws.Cells(i, "Q").Value = "Precheck Already Sent | TZ=" & zoneCode
+                GoTo NextRow
+            End If
+        End If
+
+        ' 2ND CHECK
+        If eventTime < nowTime Then
+
+            ' If no chain exists, allow 2nd check even when precheck was not sent.
+            If chainStatus = "no" Then
+                SendMail loadNo, email, eventTime, True
+                ws.Cells(i, "N").Value = "Yes"
+                If sendNow Then
+                    ws.Cells(i, "Q").Value = "2nd Check Sent | TZ=" & zoneCode & _
+                                             " | SentAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                Else
+                    ws.Cells(i, "Q").Value = "2nd Check drafted | TZ=" & zoneCode & _
+                                             " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                End If
+
+            ElseIf chainStatus = "yes" And precheck = "yes" Then
+                SendMail loadNo, email, eventTime, True
+                ws.Cells(i, "N").Value = "Yes"
+                If sendNow Then
+                    ws.Cells(i, "Q").Value = "2nd Check Sent (Thread) | TZ=" & zoneCode & _
+                                             " | SentAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                Else
+                    ws.Cells(i, "Q").Value = "2nd Check drafted (Thread) | TZ=" & zoneCode & _
+                                             " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                End If
+
+            Else
+                ws.Cells(i, "Q").Value = "Skipped: Chain Exists, No Precheck | TZ=" & zoneCode
+                GoTo NextRow
+            End If
+
+            ws.Cells(i, "K").Value = "Yes"
+            ws.Cells(i, "L").Value = nowTime
+
+        Else
+            ws.Cells(i, "Q").Value = "Skipped: Time Not Reached | TZ=" & zoneCode & _
+                                     " | Now=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM") & _
+                                     " | Start(E)=" & Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM")
+        End If
+
+NextRow:
+    Next i
+
+End Sub
+
+' =====================================================
+' DATE FIX (FINAL)
+' =====================================================
+Function SafeConvert(val As Variant) As Date
+
+    On Error GoTo Fail
+
+    Dim txt As String
+    Dim d As Integer, m As Integer, y As Integer
+    Dim h As Integer, minuteValue As Integer
+    Dim isPM As Boolean
+    Dim dateParts() As String, timeParts() As String
+    Dim parts() As String
+
+    txt = UCase(Trim(CStr(val)))
+    If txt = "" Then GoTo Fail
+
+    txt = Replace(txt, " AM", "AM")
+    txt = Replace(txt, " PM", "PM")
+    txt = Replace(txt, "AM", " AM")
+    txt = Replace(txt, "PM", " PM")
+    txt = Application.WorksheetFunction.Trim(txt)
+
+    parts = Split(txt, " ")
+    If UBound(parts) < 2 Then GoTo Fail
+
+    dateParts = Split(parts(0), "/")
+    If UBound(dateParts) <> 2 Then GoTo Fail
+
+    ' Force US format: MM/DD/YYYY (do not use locale-dependent CDate)
+    m = CInt(dateParts(0))
+    d = CInt(dateParts(1))
+    y = CInt(dateParts(2))
+    If m < 1 Or m > 12 Then GoTo Fail
+    If d < 1 Or d > 31 Then GoTo Fail
+
+    timeParts = Split(parts(1), ":")
+    If UBound(timeParts) <> 1 Then GoTo Fail
+
+    h = CInt(timeParts(0))
+    minuteValue = CInt(timeParts(1))
+    If h < 1 Or h > 12 Then GoTo Fail
+    If minuteValue < 0 Or minuteValue > 59 Then GoTo Fail
+
+    isPM = (UCase(parts(2)) = "PM")
+    If Not isPM And UCase(parts(2)) <> "AM" Then GoTo Fail
+
+    If isPM And h < 12 Then h = h + 12
+    If Not isPM And h = 12 Then h = 0
+
+    SafeConvert = DateSerial(y, m, d) + TimeSerial(h, minuteValue, 0)
+    Exit Function
+
+Fail:
+    SafeConvert = 0
+
+End Function
+
+' =====================================================
+' SEND EMAIL
+' =====================================================
+Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As Boolean)
+
+    Dim app As Object, mail As Object, existing As Object
+    Dim greet As String
+    Dim sendNow As Boolean
+    Dim fromAddress As String
+
+    Set app = CreateObject("Outlook.Application")
+    greet = GetGreeting()
+    sendNow = ShouldSendEmails()
+    fromAddress = GetFromAccountSetting()
+
+    Set existing = GetExistingMail(loadNo)
+
+    If Not existing Is Nothing Then
+        Set mail = existing.ReplyAll
+    Else
+        Set mail = app.CreateItem(0)
+        mail.To = email
+        mail.Subject = "Penske Load#" & loadNo & " | Pickup Status"
+    End If
+
+    ApplyFromAccount app, mail, fromAddress
+
+    ' CC
+    EnsureCcAddress mail, MY_EMAIL
+    EnsureCcAddress mail, fromAddress
+
+    If isReminder Then
+        mail.Body = greet & " Team," & vbCrLf & vbCrLf & _
+                    "Please confirm driver has picked up load scheduled on " & _
+                    Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM") & vbCrLf & vbCrLf & mail.Body
+    Else
+        mail.Body = greet & " Team," & vbCrLf & vbCrLf & _
+                    "Please confirm driver is ready for pickup scheduled on " & _
+                    Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM") & vbCrLf & vbCrLf & mail.Body
+    End If
+
+    If sendNow Then
+        mail.Send
+    Else
+        mail.Save
+    End If
+    Application.Wait Now + TimeValue("00:00:02")
+
+End Sub
+
+Private Sub EnsureCcAddress(mail As Object, addressText As String)
+
+    Dim ccValue As String, candidate As String
+
+    candidate = Trim(addressText)
+    If candidate = "" Then Exit Sub
+
+    ccValue = Trim(CStr(mail.CC))
+    If InStr(1, ccValue, candidate, vbTextCompare) = 0 Then
+        If ccValue <> "" Then
+            mail.CC = ccValue & ";" & candidate
+        Else
+            mail.CC = candidate
+        End If
+    End If
+End Sub
+
+Private Function GetSettingValue(cellAddress As String) As String
+
+    On Error GoTo Fail
+    GetSettingValue = Trim(CStr(ThisWorkbook.Sheets(SETTING_SHEET).Range(cellAddress).Value))
+    Exit Function
+
+Fail:
+    GetSettingValue = ""
+End Function
+
+Private Function GetFromAccountSetting() As String
+    GetFromAccountSetting = GetSettingValue("B1")
+End Function
+
+Private Function ValidateSettings() As Boolean
+
+    Dim fromAccount As String
+
+    fromAccount = Trim(GetFromAccountSetting())
+    If fromAccount = "" Then
+        MsgBox "Enter From Email address", vbExclamation
+        ValidateSettings = False
+        Exit Function
+    End If
+
+    ValidateSettings = True
+End Function
+
+Private Function ShouldSendEmails() As Boolean
+
+    Dim modeValue As String
+
+    modeValue = UCase(GetSettingValue("B2"))
+    ' Default to Send when setting is blank/unknown.
+    If modeValue = "DRAFT" Then
+        ShouldSendEmails = False
+    Else
+        ShouldSendEmails = True
+    End If
+End Function
+
+Private Sub ApplyFromAccount(app As Object, mail As Object, fromSetting As String)
+
+    Dim ns As Object, ac As Object
+    Dim wanted As String
+
+    wanted = Trim(fromSetting)
+    If wanted = "" Then Exit Sub
+
+    On Error Resume Next
+    Set ns = app.GetNamespace("MAPI")
+    If ns Is Nothing Then Exit Sub
+
+    For Each ac In ns.Accounts
+        If MatchAccount(ac, wanted) Then
+            Set mail.SendUsingAccount = ac
+            Exit Sub
+        End If
+    Next ac
+    On Error GoTo 0
+End Sub
+
+Private Function MatchAccount(ac As Object, wanted As String) As Boolean
+
+    Dim smtp As String, displayName As String
+
+    On Error Resume Next
+    smtp = Trim(CStr(ac.SmtpAddress))
+    displayName = Trim(CStr(ac.displayName))
+    On Error GoTo 0
+
+    MatchAccount = False
+    If smtp <> "" Then
+        If StrComp(smtp, wanted, vbTextCompare) = 0 Then
+            MatchAccount = True
+            Exit Function
+        End If
+    End If
+    If displayName <> "" Then
+        If StrComp(displayName, wanted, vbTextCompare) = 0 Then
+            MatchAccount = True
+        End If
+    End If
+End Function
+
+' =====================================================
+' EXISTING EMAIL
+' =====================================================
+Function GetExistingMail(loadNo As String) As Object
+
+    Dim app As Object, ns As Object
+    Dim inbox As Object, sent As Object, item As Object
+
+    Set app = CreateObject("Outlook.Application")
+    Set ns = app.GetNamespace("MAPI")
+
+    Set inbox = ns.GetDefaultFolder(6)
+    Set sent = ns.GetDefaultFolder(5)
+
+    For Each item In inbox.Items
+        If IsMailItem(item) Then
+            If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
+                Set GetExistingMail = item
+                Exit Function
+            End If
+        End If
+    Next
+
+    For Each item In sent.Items
+        If IsMailItem(item) Then
+            If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
+                Set GetExistingMail = item
+                Exit Function
+            End If
+        End If
+    Next
+
+    Set GetExistingMail = Nothing
+
+End Function
+
+Function IsMailItem(item As Object) As Boolean
+    On Error Resume Next
+    IsMailItem = (item.Class = 43) ' 43 = olMail
+    On Error GoTo 0
+End Function
+
+Function CheckReply(loadNo As String) As String
+
+    Dim app As Object, ns As Object
+    Dim inbox As Object, item As Object
+
+    Set app = CreateObject("Outlook.Application")
+    Set ns = app.GetNamespace("MAPI")
+    Set inbox = ns.GetDefaultFolder(6)
+
+    For Each item In inbox.Items
+        If IsMailItem(item) Then
+            If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
+                If InStr(1, item.Subject, "External", vbTextCompare) > 0 Then
+                    CheckReply = "Reply Received"
+                    Exit Function
+                End If
+            End If
+        End If
+    Next
+
+    CheckReply = "No Reply"
+End Function
+
+Function GetCarrierEmail(ws As Worksheet, scac As String) As String
+
+    Dim r As Range
+    Set r = ws.Columns("A").Find(scac, LookAt:=xlWhole)
+
+    If r Is Nothing Then
+        GetCarrierEmail = ""
+    Else
+        GetCarrierEmail = ws.Cells(r.Row, "C").Value
+    End If
+
+End Function
+
+Function IsExceptional(wsException As Worksheet, scac As String, custName As String) As Boolean
+    Dim lastRow As Long, i As Long
+    Dim nm As String, typ As String
+
+    lastRow = wsException.Cells(wsException.Rows.Count, "A").End(xlUp).Row
+
+    For i = 2 To lastRow
+        nm = LCase(Trim(wsException.Cells(i, "A").Value))
+        typ = LCase(Trim(wsException.Cells(i, "B").Value))
+
+        If typ = "carrier" Then
+            If nm <> "" And nm = LCase(Trim(scac)) Then
+                IsExceptional = True
+                Exit Function
+            End If
+        ElseIf typ = "customer" Then
+            If nm <> "" And nm = LCase(Trim(custName)) Then
+                IsExceptional = True
+                Exit Function
+            End If
+        End If
+    Next
+
+    IsExceptional = False
+End Function
+
+Function GetTimezoneCode(wsTZ As Worksheet, city As String, st As String) As String
+    Dim lastRow As Long, i As Long
+    Dim c As String, s As String
+
+    lastRow = wsTZ.Cells(wsTZ.Rows.Count, "A").End(xlUp).Row
+
+    For i = 2 To lastRow
+        c = LCase(Trim(wsTZ.Cells(i, "A").Value))
+        s = LCase(Trim(wsTZ.Cells(i, "B").Value))
+        If c = LCase(Trim(city)) And s = LCase(Trim(st)) Then
+            GetTimezoneCode = NormalizeZoneCode(CStr(wsTZ.Cells(i, "C").Value))
+            Exit Function
+        End If
+    Next
+
+    GetTimezoneCode = ""
+End Function
+
+Function NormalizeZoneCode(rawZone As String) As String
+    Dim z As String
+    z = UCase(Trim(rawZone))
+    z = Replace(z, "-", "")
+    z = Replace(z, " ", "")
+    NormalizeZoneCode = z
+End Function
+
+Function GetNowForZoneFromEST(zoneCode As String) As Date
+    Dim zoneTxt As String
+
+    zoneTxt = NormalizeZoneCode(zoneCode)
+
+    ' User requested to treat system Now as EST baseline.
+    Select Case zoneTxt
+        Case "EST", "EDT"
+            GetNowForZoneFromEST = Now
+        Case "CST", "CDT"
+            GetNowForZoneFromEST = DateAdd("h", -1, Now)
+        Case "MST", "MDT"
+            GetNowForZoneFromEST = DateAdd("h", -2, Now)
+        Case "PST", "PDT"
+            GetNowForZoneFromEST = DateAdd("h", -3, Now)
+        Case Else
+            GetNowForZoneFromEST = Now
+    End Select
+End Function
+
+Function GetGreeting() As String
+    Dim h As Integer: h = Hour(Now)
+    If h < 12 Then
+        GetGreeting = "Good Morning"
+    ElseIf h < 17 Then
+        GetGreeting = "Good Afternoon"
+    Else
+        GetGreeting = "Good Evening"
+    End If
+End Function
+
+
+
+
