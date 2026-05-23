@@ -678,3 +678,7 @@ Private Function GetReminderBody(loadNo As String, eventTime As Date) As String
         GetReminderBody = "Please confirm the driver has picked up load scheduled on " & pickupAt & "."
     End If
 End Function
+
+
+
+
