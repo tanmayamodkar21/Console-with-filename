@@ -349,12 +349,10 @@ Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As
 
     If isReminder Then
         mail.Body = greet & " Team," & vbCrLf & vbCrLf & _
-                    "Please confirm driver has picked up load scheduled on " & _
-                    Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM") & vbCrLf & vbCrLf & mail.Body
+                    GetReminderBody(loadNo, eventTime) & vbCrLf & vbCrLf & mail.Body
     Else
         mail.Body = greet & " Team," & vbCrLf & vbCrLf & _
-                    "Please confirm driver is ready for pickup scheduled on " & _
-                    Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM") & vbCrLf & vbCrLf & mail.Body
+                    GetPrecheckBody(loadNo, eventTime) & vbCrLf & vbCrLf & mail.Body
     End If
 
     If sendNow Then
@@ -629,6 +627,54 @@ Function GetGreeting() As String
     End If
 End Function
 
+' Odd load number = template A, even = template B (same question, different wording).
+Private Function UseAlternateEmailTemplate(loadNo As String) As Boolean
+    UseAlternateEmailTemplate = (GetLoadNumericKey(loadNo) Mod 2 = 0)
+End Function
 
+Private Function GetLoadNumericKey(loadNo As String) As Long
+    Dim i As Long, c As String, digits As String
 
+    loadNo = Trim(loadNo)
+    If loadNo = "" Then Exit Function
 
+    If IsNumeric(loadNo) Then
+        GetLoadNumericKey = CLng(val(loadNo))
+        Exit Function
+    End If
+
+    For i = 1 To Len(loadNo)
+        c = Mid(loadNo, i, 1)
+        If c >= "0" And c <= "9" Then digits = digits & c
+    Next i
+
+    If digits <> "" Then GetLoadNumericKey = CLng(val(digits))
+End Function
+
+Private Function FormatPickupDateTime(eventTime As Date) As String
+    FormatPickupDateTime = Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM")
+End Function
+
+Private Function GetPrecheckBody(loadNo As String, eventTime As Date) As String
+    Dim pickupAt As String
+    pickupAt = FormatPickupDateTime(eventTime)
+
+    If UseAlternateEmailTemplate(loadNo) Then
+        GetPrecheckBody = "Load " & loadNo & " is scheduled for pickup on " & pickupAt & "." & vbCrLf & _
+                          "Please confirm the driver will be on time."
+    Else
+        GetPrecheckBody = "Please confirm the driver is ready for pickup scheduled on " & pickupAt & "."
+    End If
+End Function
+
+Private Function GetReminderBody(loadNo As String, eventTime As Date) As String
+    Dim pickupAt As String
+    pickupAt = FormatPickupDateTime(eventTime)
+
+    If UseAlternateEmailTemplate(loadNo) Then
+        GetReminderBody = "Load " & loadNo & " was scheduled for pickup on " & pickupAt & "." & vbCrLf & _
+                          "Please confirm pickup has been completed."
+    Else
+        GetReminderBody = "Please confirm the driver has picked up load scheduled on " & pickupAt & "."
+    End If
+End Function
