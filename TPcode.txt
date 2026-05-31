@@ -1,14 +1,13 @@
 Option Explicit
 
 ' ================= CONFIG =================
-Const DUMP_SHEET_NAME As String = "Sheet1"
+Const DUMP_SHEET_NAME As String = "Report"
 Const MASTER_SHEET As String = "Master_Data"
 Const CARRIER_SHEET As String = "Carrier Email Database"
 Const EXCEPTION_SHEET As String = "Exceptional_carriers_customers"
 Const SETTING_SHEET As String = "Setting"
 Const PRECHECK_WINDOW_HOURS As Double = 3 / 24
-Const MY_EMAIL As String = "tanuamodkar@3ygjrx.onmicrosoft.com"
-Const OUTLOOK_SIGNATURE_NAME As String = "CHI_SIGN"
+Const OUTLOOK_SIGNATURE_NAME As String = "Tanmay"
 ' ==========================================
 
 Sub Run_Full_Pipeline()
@@ -48,7 +47,7 @@ Sub Import_Dump()
 
     For i = 2 To lastRow
 
-        loadNo = NormalizeLoadNo(Trim(Split(CStr(wsDump.Cells(i, "B").Value), " ")(0)))
+        loadNo = NormalizeLoadNo(Split(GetLoadNoFromCell(wsDump.Cells(i, "B")), " ")(0))
         If loadNo = "" Then GoTo ContinueLoop
 
         existingRow = FindMasterRowByLoad(wsMaster, loadNo)
@@ -140,7 +139,7 @@ Sub Process_Emails()
 
         debugMsg = ""
 
-        loadNo = NormalizeLoadNo(ws.Cells(i, "B").Value)
+        loadNo = NormalizeLoadNo(GetLoadNoFromCell(ws.Cells(i, "B")))
         scac = ws.Cells(i, "C").Value
         custName = ws.Cells(i, "A").Value
         origCity = ws.Cells(i, "G").Value
@@ -207,7 +206,7 @@ Sub Process_Emails()
         ' PRECHECK
         If eventTime >= nowTime And eventTime <= nowTime + PRECHECK_WINDOW_HOURS Then
             If precheck <> "yes" Then
-                SendMail loadNo, email, eventTime, False, UseAlternateEmailTemplate(loadNo, i)
+                SendMail loadNo, email, eventTime, False, UseAlternateEmailTemplate(i)
                 ws.Cells(i, "M").Value = "Yes"
                 ws.Cells(i, "K").Value = "Yes"
                 ws.Cells(i, "L").Value = nowTime
@@ -230,7 +229,7 @@ Sub Process_Emails()
 
             ' If no chain exists, allow 2nd check even when precheck was not sent.
             If chainStatus = "no" Then
-                SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(loadNo, i)
+                SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(i)
                 ws.Cells(i, "N").Value = "Yes"
                 If sendNow Then
                     ws.Cells(i, "Q").Value = "2nd Check Sent | TZ=" & zoneCode & _
@@ -241,7 +240,7 @@ Sub Process_Emails()
                 End If
 
             ElseIf chainStatus = "yes" And precheck = "yes" Then
-                SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(loadNo, i)
+                SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(i)
                 ws.Cells(i, "N").Value = "Yes"
                 If sendNow Then
                     ws.Cells(i, "Q").Value = "2nd Check Sent (Thread) | TZ=" & zoneCode & _
@@ -356,7 +355,6 @@ Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As
     ApplyFromAccount app, mail, fromAddress
 
     ' CC
-    EnsureCcAddress mail, MY_EMAIL
     EnsureCcAddress mail, fromAddress
 
     Dim messageText As String
@@ -431,9 +429,9 @@ Private Sub ApplyOutlookSignatureHtmlFallback(mail As Object, messageText As Str
     Dim existingHtml As String
 
     msgHtml = BuildMessageHtml(messageText)
-    existingHtml = mail.htmlBody
-    If Len(Trim$(existingHtml)) = 0 Then existingHtml = mail.htmlBody
-    mail.htmlBody = msgHtml & "<br><br>" & existingHtml
+    existingHtml = mail.HTMLBody
+    If Len(Trim$(existingHtml)) = 0 Then existingHtml = mail.HTMLBody
+    mail.HTMLBody = msgHtml & "<br><br>" & existingHtml
 
 End Sub
 
@@ -547,7 +545,7 @@ Private Function MatchAccount(ac As Object, wanted As String) As Boolean
 
     On Error Resume Next
     smtp = Trim(CStr(ac.SmtpAddress))
-    displayName = Trim(CStr(ac.displayName))
+    displayName = Trim(CStr(ac.DisplayName))
     On Error GoTo 0
 
     MatchAccount = False
@@ -767,58 +765,32 @@ Function GetGreeting() As String
     End If
 End Function
 
-' Odd last digit = template A, even last digit = template B.
-' Uses master sheet row as fallback when load has no digits (avoids CLng overflow on long load IDs).
-Private Function UseAlternateEmailTemplate(loadNo As String, masterRow As Long) As Boolean
-    Dim lastDigit As Long
+' Alternate by Excel row in column B: B1/A, B2/B, B3/A, B4/B, ...
+' Odd row = template A, even row = template B (same on every PC).
+Private Function UseAlternateEmailTemplate(excelRow As Long) As Boolean
+    UseAlternateEmailTemplate = (excelRow Mod 2 = 0)
+End Function
 
-    lastDigit = GetLoadLastDigit(loadNo)
-    If lastDigit < 0 Then
-        If masterRow > 0 Then
-            UseAlternateEmailTemplate = (masterRow Mod 2 = 0)
-        Else
-            UseAlternateEmailTemplate = False
-        End If
-    Else
-        UseAlternateEmailTemplate = (lastDigit Mod 2 = 0)
-    End If
+' Read displayed cell text first (.Text) to avoid scientific notation / rounding on other systems.
+Private Function GetLoadNoFromCell(cell As Range) As String
+
+    Dim txt As String
+
+    On Error Resume Next
+    txt = Trim$(cell.Text)
+    If Err.Number <> 0 Or txt = "" Then txt = Trim$(CStr(cell.Value))
+    On Error GoTo 0
+
+    GetLoadNoFromCell = txt
 End Function
 
 Private Function NormalizeLoadNo(val As Variant) As String
-    Dim txt As String
 
     If IsEmpty(val) Or IsNull(val) Then
         NormalizeLoadNo = ""
-        Exit Function
-    End If
-
-    If IsNumeric(val) Then
-        txt = Format$(val, "0")
     Else
-        txt = Trim(CStr(val))
+        NormalizeLoadNo = Trim$(CStr(val))
     End If
-
-    NormalizeLoadNo = txt
-End Function
-
-Private Function GetLoadLastDigit(loadNo As String) As Long
-    Dim i As Long, c As String
-
-    loadNo = NormalizeLoadNo(loadNo)
-    If loadNo = "" Then
-        GetLoadLastDigit = -1
-        Exit Function
-    End If
-
-    For i = Len(loadNo) To 1 Step -1
-        c = Mid(loadNo, i, 1)
-        If c >= "0" And c <= "9" Then
-            GetLoadLastDigit = CLng(c)
-            Exit Function
-        End If
-    Next i
-
-    GetLoadLastDigit = -1
 End Function
 
 Private Function FormatPickupDateTime(eventTime As Date) As String
@@ -848,7 +820,5 @@ Private Function GetReminderBody(loadNo As String, eventTime As Date, useAlterna
         GetReminderBody = "Please confirm the driver has picked up load scheduled on " & pickupAt & "."
     End If
 End Function
-
-
 
 
