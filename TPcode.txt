@@ -1,14 +1,14 @@
 Option Explicit
 
 ' ================= CONFIG =================
-Const DUMP_FILE_PATH As String = "C:\Users\tanua\OneDrive\Documents\Office Email Automation\Dumpfile.xls"
-Const DUMP_SHEET_NAME As String = "Report"
+Const DUMP_SHEET_NAME As String = "Sheet1"
 Const MASTER_SHEET As String = "Master_Data"
 Const CARRIER_SHEET As String = "Carrier Email Database"
 Const EXCEPTION_SHEET As String = "Exceptional_carriers_customers"
 Const SETTING_SHEET As String = "Setting"
 Const PRECHECK_WINDOW_HOURS As Double = 3 / 24
 Const MY_EMAIL As String = "tanuamodkar@3ygjrx.onmicrosoft.com"
+Const OUTLOOK_SIGNATURE_NAME As String = "CHI_SIGN"
 ' ==========================================
 
 Sub Run_Full_Pipeline()
@@ -27,8 +27,20 @@ Sub Import_Dump()
     Dim loadNo As String
     Dim existingRow As Long
 
+    Dim dumpPath As String
+
     Set wsMaster = ThisWorkbook.Sheets(MASTER_SHEET)
-    Set wb = Workbooks.Open(DUMP_FILE_PATH, ReadOnly:=True)
+    dumpPath = GetDumpFilePath()
+    If dumpPath = "" Then
+        MsgBox "Enter Dump File path in Setting sheet cell B3", vbExclamation
+        Exit Sub
+    End If
+    If Dir(dumpPath) = "" Then
+        MsgBox "Dump file not found:" & vbCrLf & dumpPath, vbExclamation
+        Exit Sub
+    End If
+
+    Set wb = Workbooks.Open(dumpPath, ReadOnly:=True)
     Set wsDump = wb.Sheets(DUMP_SHEET_NAME)
 
     lastRow = wsDump.Cells(wsDump.Rows.Count, "B").End(xlUp).Row
@@ -36,7 +48,7 @@ Sub Import_Dump()
 
     For i = 2 To lastRow
 
-        loadNo = Trim(Split(wsDump.Cells(i, "B").Value, " ")(0))
+        loadNo = NormalizeLoadNo(Trim(Split(CStr(wsDump.Cells(i, "B").Value), " ")(0)))
         If loadNo = "" Then GoTo ContinueLoop
 
         existingRow = FindMasterRowByLoad(wsMaster, loadNo)
@@ -128,7 +140,7 @@ Sub Process_Emails()
 
         debugMsg = ""
 
-        loadNo = ws.Cells(i, "B").Value
+        loadNo = NormalizeLoadNo(ws.Cells(i, "B").Value)
         scac = ws.Cells(i, "C").Value
         custName = ws.Cells(i, "A").Value
         origCity = ws.Cells(i, "G").Value
@@ -171,8 +183,8 @@ Sub Process_Emails()
         End If
         ws.Cells(i, "P").Value = UCase(chainStatus)
 
-        ' Reply check
-        reply = CheckReply(loadNo)
+        ' Reply check (any inbound mail on this load from someone other than Setting B1)
+        reply = CheckReply(loadNo, GetFromAccountSetting())
         ws.Cells(i, "O").Value = reply
 
         If reply = "Reply Received" Then
@@ -195,7 +207,7 @@ Sub Process_Emails()
         ' PRECHECK
         If eventTime >= nowTime And eventTime <= nowTime + PRECHECK_WINDOW_HOURS Then
             If precheck <> "yes" Then
-                SendMail loadNo, email, eventTime, False
+                SendMail loadNo, email, eventTime, False, UseAlternateEmailTemplate(loadNo, i)
                 ws.Cells(i, "M").Value = "Yes"
                 ws.Cells(i, "K").Value = "Yes"
                 ws.Cells(i, "L").Value = nowTime
@@ -218,7 +230,7 @@ Sub Process_Emails()
 
             ' If no chain exists, allow 2nd check even when precheck was not sent.
             If chainStatus = "no" Then
-                SendMail loadNo, email, eventTime, True
+                SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(loadNo, i)
                 ws.Cells(i, "N").Value = "Yes"
                 If sendNow Then
                     ws.Cells(i, "Q").Value = "2nd Check Sent | TZ=" & zoneCode & _
@@ -229,7 +241,7 @@ Sub Process_Emails()
                 End If
 
             ElseIf chainStatus = "yes" And precheck = "yes" Then
-                SendMail loadNo, email, eventTime, True
+                SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(loadNo, i)
                 ws.Cells(i, "N").Value = "Yes"
                 If sendNow Then
                     ws.Cells(i, "Q").Value = "2nd Check Sent (Thread) | TZ=" & zoneCode & _
@@ -319,7 +331,7 @@ End Function
 ' =====================================================
 ' SEND EMAIL
 ' =====================================================
-Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As Boolean)
+Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As Boolean, useAlternateTemplate As Boolean)
 
     Dim app As Object, mail As Object, existing As Object
     Dim greet As String
@@ -347,13 +359,22 @@ Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As
     EnsureCcAddress mail, MY_EMAIL
     EnsureCcAddress mail, fromAddress
 
+    Dim messageText As String
+
     If isReminder Then
-        mail.Body = greet & " Team," & vbCrLf & vbCrLf & _
-                    GetReminderBody(loadNo, eventTime) & vbCrLf & vbCrLf & mail.Body
+        messageText = greet & " Team," & vbCrLf & vbCrLf & _
+                        GetReminderBody(loadNo, eventTime, useAlternateTemplate)
     Else
-        mail.Body = greet & " Team," & vbCrLf & vbCrLf & _
-                    GetPrecheckBody(loadNo, eventTime) & vbCrLf & vbCrLf & mail.Body
+        messageText = greet & " Team," & vbCrLf & vbCrLf & _
+                        GetPrecheckBody(loadNo, eventTime, useAlternateTemplate)
     End If
+
+    If Trim(CStr(mail.Body)) <> "" Then
+        messageText = messageText & vbCrLf & vbCrLf & mail.Body
+    End If
+
+    mail.BodyFormat = 2
+    ApplyOutlookSignature mail, messageText
 
     If sendNow Then
         mail.Send
@@ -363,6 +384,71 @@ Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As
     Application.Wait Now + TimeValue("00:00:02")
 
 End Sub
+
+' Display loads signature; insert message with Word at the top so HTMLBody replace does not wipe it.
+Private Sub ApplyOutlookSignature(mail As Object, messageText As String)
+
+    Const wdCollapseStart As Long = 1
+    Const olSave As Long = 0
+
+    Dim insp As Object
+    Dim wordDoc As Object
+    Dim insertAt As Object
+
+    On Error Resume Next
+
+    mail.Display
+    DoEvents
+    Application.Wait Now + TimeValue("00:00:02")
+
+    Set insp = mail.GetInspector
+    Set wordDoc = insp.WordEditor
+
+    If Not wordDoc Is Nothing Then
+        If wordDoc.Bookmarks.Exists("_MailOriginal") Then
+            Set insertAt = wordDoc.Bookmarks("_MailOriginal").Range
+            insertAt.Collapse wdCollapseStart
+        Else
+            Set insertAt = wordDoc.Range
+            insertAt.Collapse wdCollapseStart
+        End If
+
+        insertAt.InsertBefore messageText & vbCrLf & vbCrLf
+    Else
+        ApplyOutlookSignatureHtmlFallback mail, messageText
+    End If
+
+    If Not insp Is Nothing Then insp.Close olSave
+
+    On Error GoTo 0
+
+End Sub
+
+' Only used if Word editor is unavailable. Prepends HTML without replacing signature block.
+Private Sub ApplyOutlookSignatureHtmlFallback(mail As Object, messageText As String)
+
+    Dim msgHtml As String
+    Dim existingHtml As String
+
+    msgHtml = BuildMessageHtml(messageText)
+    existingHtml = mail.htmlBody
+    If Len(Trim$(existingHtml)) = 0 Then existingHtml = mail.htmlBody
+    mail.htmlBody = msgHtml & "<br><br>" & existingHtml
+
+End Sub
+
+Private Function BuildMessageHtml(messageText As String) As String
+    BuildMessageHtml = "<div style=""font-family:Calibri,Arial,sans-serif;font-size:11pt;"">" & _
+                       PlainTextToHtml(messageText) & "</div>"
+End Function
+
+Private Function PlainTextToHtml(txt As String) As String
+
+    txt = Replace(txt, "&", "&amp;")
+    txt = Replace(txt, "<", "&lt;")
+    txt = Replace(txt, ">", "&gt;")
+    PlainTextToHtml = Replace(txt, vbCrLf, "<br>")
+End Function
 
 Private Sub EnsureCcAddress(mail As Object, addressText As String)
 
@@ -395,13 +481,25 @@ Private Function GetFromAccountSetting() As String
     GetFromAccountSetting = GetSettingValue("B1")
 End Function
 
+Private Function GetDumpFilePath() As String
+    GetDumpFilePath = GetSettingValue("B3")
+End Function
+
 Private Function ValidateSettings() As Boolean
 
     Dim fromAccount As String
+    Dim dumpPath As String
 
     fromAccount = Trim(GetFromAccountSetting())
     If fromAccount = "" Then
-        MsgBox "Enter From Email address", vbExclamation
+        MsgBox "Enter From Email address in Setting sheet cell B1", vbExclamation
+        ValidateSettings = False
+        Exit Function
+    End If
+
+    dumpPath = Trim(GetDumpFilePath())
+    If dumpPath = "" Then
+        MsgBox "Enter Dump File path in Setting sheet cell B3", vbExclamation
         ValidateSettings = False
         Exit Function
     End If
@@ -449,7 +547,7 @@ Private Function MatchAccount(ac As Object, wanted As String) As Boolean
 
     On Error Resume Next
     smtp = Trim(CStr(ac.SmtpAddress))
-    displayName = Trim(CStr(ac.DisplayName))
+    displayName = Trim(CStr(ac.displayName))
     On Error GoTo 0
 
     MatchAccount = False
@@ -508,10 +606,18 @@ Function IsMailItem(item As Object) As Boolean
     On Error GoTo 0
 End Function
 
-Function CheckReply(loadNo As String) As String
+Function CheckReply(loadNo As String, ourMailbox As String) As String
 
     Dim app As Object, ns As Object
     Dim inbox As Object, item As Object
+    Dim senderAddress As String
+
+    loadNo = NormalizeLoadNo(loadNo)
+    ourMailbox = LCase(Trim(ourMailbox))
+    If loadNo = "" Or ourMailbox = "" Then
+        CheckReply = "No Reply"
+        Exit Function
+    End If
 
     Set app = CreateObject("Outlook.Application")
     Set ns = app.GetNamespace("MAPI")
@@ -519,16 +625,50 @@ Function CheckReply(loadNo As String) As String
 
     For Each item In inbox.Items
         If IsMailItem(item) Then
-            If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
-                If InStr(1, item.Subject, "External", vbTextCompare) > 0 Then
-                    CheckReply = "Reply Received"
-                    Exit Function
+            If MailMatchesLoad(item, loadNo) Then
+                senderAddress = GetSenderSmtpAddress(item)
+                If senderAddress <> "" Then
+                    If Not IsOurMailboxAddress(senderAddress, ourMailbox) Then
+                        CheckReply = "Reply Received"
+                        Exit Function
+                    End If
                 End If
             End If
         End If
     Next
 
     CheckReply = "No Reply"
+End Function
+
+Private Function MailMatchesLoad(item As Object, loadNo As String) As Boolean
+    MailMatchesLoad = (InStr(1, CStr(item.Subject), loadNo, vbTextCompare) > 0)
+End Function
+
+Private Function GetSenderSmtpAddress(item As Object) As String
+
+    Dim addr As String
+    Dim exUser As Object
+
+    On Error Resume Next
+    addr = ""
+
+    If item.SenderEmailType = "SMTP" Then
+        addr = item.SenderEmailAddress
+    ElseIf Not item.Sender Is Nothing Then
+        Set exUser = item.Sender.GetExchangeUser()
+        If Not exUser Is Nothing Then
+            addr = exUser.PrimarySmtpAddress
+        End If
+    End If
+
+    If addr = "" Then addr = item.SenderEmailAddress
+    On Error GoTo 0
+
+    GetSenderSmtpAddress = LCase(Trim(addr))
+End Function
+
+Private Function IsOurMailboxAddress(senderAddress As String, ourMailbox As String) As Boolean
+    IsOurMailboxAddress = (StrComp(LCase(Trim(senderAddress)), LCase(Trim(ourMailbox)), vbTextCompare) = 0)
 End Function
 
 Function GetCarrierEmail(ws As Worksheet, scac As String) As String
@@ -627,39 +767,69 @@ Function GetGreeting() As String
     End If
 End Function
 
-' Odd load number = template A, even = template B (same question, different wording).
-Private Function UseAlternateEmailTemplate(loadNo As String) As Boolean
-    UseAlternateEmailTemplate = (GetLoadNumericKey(loadNo) Mod 2 = 0)
+' Odd last digit = template A, even last digit = template B.
+' Uses master sheet row as fallback when load has no digits (avoids CLng overflow on long load IDs).
+Private Function UseAlternateEmailTemplate(loadNo As String, masterRow As Long) As Boolean
+    Dim lastDigit As Long
+
+    lastDigit = GetLoadLastDigit(loadNo)
+    If lastDigit < 0 Then
+        If masterRow > 0 Then
+            UseAlternateEmailTemplate = (masterRow Mod 2 = 0)
+        Else
+            UseAlternateEmailTemplate = False
+        End If
+    Else
+        UseAlternateEmailTemplate = (lastDigit Mod 2 = 0)
+    End If
 End Function
 
-Private Function GetLoadNumericKey(loadNo As String) As Long
-    Dim i As Long, c As String, digits As String
+Private Function NormalizeLoadNo(val As Variant) As String
+    Dim txt As String
 
-    loadNo = Trim(loadNo)
-    If loadNo = "" Then Exit Function
-
-    If IsNumeric(loadNo) Then
-        GetLoadNumericKey = CLng(Val(loadNo))
+    If IsEmpty(val) Or IsNull(val) Then
+        NormalizeLoadNo = ""
         Exit Function
     End If
 
-    For i = 1 To Len(loadNo)
+    If IsNumeric(val) Then
+        txt = Format$(val, "0")
+    Else
+        txt = Trim(CStr(val))
+    End If
+
+    NormalizeLoadNo = txt
+End Function
+
+Private Function GetLoadLastDigit(loadNo As String) As Long
+    Dim i As Long, c As String
+
+    loadNo = NormalizeLoadNo(loadNo)
+    If loadNo = "" Then
+        GetLoadLastDigit = -1
+        Exit Function
+    End If
+
+    For i = Len(loadNo) To 1 Step -1
         c = Mid(loadNo, i, 1)
-        If c >= "0" And c <= "9" Then digits = digits & c
+        If c >= "0" And c <= "9" Then
+            GetLoadLastDigit = CLng(c)
+            Exit Function
+        End If
     Next i
 
-    If digits <> "" Then GetLoadNumericKey = CLng(Val(digits))
+    GetLoadLastDigit = -1
 End Function
 
 Private Function FormatPickupDateTime(eventTime As Date) As String
     FormatPickupDateTime = Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM")
 End Function
 
-Private Function GetPrecheckBody(loadNo As String, eventTime As Date) As String
+Private Function GetPrecheckBody(loadNo As String, eventTime As Date, useAlternateTemplate As Boolean) As String
     Dim pickupAt As String
     pickupAt = FormatPickupDateTime(eventTime)
 
-    If UseAlternateEmailTemplate(loadNo) Then
+    If useAlternateTemplate Then
         GetPrecheckBody = "Load " & loadNo & " is scheduled for pickup on " & pickupAt & "." & vbCrLf & _
                           "Please confirm the driver will be on time."
     Else
@@ -667,16 +837,18 @@ Private Function GetPrecheckBody(loadNo As String, eventTime As Date) As String
     End If
 End Function
 
-Private Function GetReminderBody(loadNo As String, eventTime As Date) As String
+Private Function GetReminderBody(loadNo As String, eventTime As Date, useAlternateTemplate As Boolean) As String
     Dim pickupAt As String
     pickupAt = FormatPickupDateTime(eventTime)
 
-    If UseAlternateEmailTemplate(loadNo) Then
+    If useAlternateTemplate Then
         GetReminderBody = "Load " & loadNo & " was scheduled for pickup on " & pickupAt & "." & vbCrLf & _
                           "Please confirm pickup has been completed."
     Else
         GetReminderBody = "Please confirm the driver has picked up load scheduled on " & pickupAt & "."
     End If
 End Function
+
+
 
 
