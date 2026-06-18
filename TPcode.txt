@@ -1,13 +1,13 @@
 Option Explicit
 
 ' ================= CONFIG =================
-Const DUMP_SHEET_NAME As String = "Report"
+Const DUMP_SHEET_NAME As String = "Sheet1"
 Const MASTER_SHEET As String = "Master_Data"
 Const CARRIER_SHEET As String = "Carrier Email Database"
 Const EXCEPTION_SHEET As String = "Exceptional_carriers_customers"
 Const SETTING_SHEET As String = "Setting"
 Const PRECHECK_WINDOW_HOURS As Double = 3 / 24
-Const OUTLOOK_SIGNATURE_NAME As String = "Tanmay"
+Const OUTLOOK_SIGNATURE_NAME As String = "CHI_SIGN"
 ' ==========================================
 
 Sub Run_Full_Pipeline()
@@ -27,8 +27,11 @@ Sub Import_Dump()
     Dim existingRow As Long
 
     Dim dumpPath As String
+    Dim wsCarrier As Worksheet
+    Dim scacVal As String, carrierNameVal As String
 
     Set wsMaster = ThisWorkbook.Sheets(MASTER_SHEET)
+    Set wsCarrier = ThisWorkbook.Sheets(CARRIER_SHEET)
     dumpPath = GetDumpFilePath()
     If dumpPath = "" Then
         MsgBox "Enter Dump File path in Setting sheet cell B3", vbExclamation
@@ -53,9 +56,11 @@ Sub Import_Dump()
         existingRow = FindMasterRowByLoad(wsMaster, loadNo)
         If existingRow > 0 Then
             ' Refresh key fields for existing loads to fix stale/wrong date values.
+            scacVal = ResolveDumpScac(wsDump, wsCarrier, i)
+            carrierNameVal = ResolveDumpCarrierName(wsDump, i, scacVal)
             wsMaster.Cells(existingRow, "A").Value = wsDump.Cells(i, "A").Value
-            wsMaster.Cells(existingRow, "C").Value = wsDump.Cells(i, "L").Value
-            wsMaster.Cells(existingRow, "D").Value = wsDump.Cells(i, "M").Value
+            wsMaster.Cells(existingRow, "C").Value = scacVal
+            wsMaster.Cells(existingRow, "D").Value = carrierNameVal
             wsMaster.Cells(existingRow, "E").Value = Trim(wsDump.Cells(i, "Z").Text)
             wsMaster.Cells(existingRow, "F").Value = Trim(wsDump.Cells(i, "AA").Text)
             wsMaster.Cells(existingRow, "G").Value = wsDump.Cells(i, "V").Value
@@ -65,10 +70,12 @@ Sub Import_Dump()
             GoTo ContinueLoop
         End If
 
+        scacVal = ResolveDumpScac(wsDump, wsCarrier, i)
+        carrierNameVal = ResolveDumpCarrierName(wsDump, i, scacVal)
         wsMaster.Cells(nextMasterRow, "A").Value = wsDump.Cells(i, "A").Value
         wsMaster.Cells(nextMasterRow, "B").Value = loadNo
-        wsMaster.Cells(nextMasterRow, "C").Value = wsDump.Cells(i, "L").Value
-        wsMaster.Cells(nextMasterRow, "D").Value = wsDump.Cells(i, "M").Value
+        wsMaster.Cells(nextMasterRow, "C").Value = scacVal
+        wsMaster.Cells(nextMasterRow, "D").Value = carrierNameVal
         wsMaster.Cells(nextMasterRow, "E").Value = Trim(wsDump.Cells(i, "Z").Text)
         ' Keep the displayed text so locale conversion does not flip MM/DD.
         wsMaster.Cells(nextMasterRow, "F").Value = Trim(wsDump.Cells(i, "AA").Text)
@@ -140,7 +147,7 @@ Sub Process_Emails()
         debugMsg = ""
 
         loadNo = NormalizeLoadNo(GetLoadNoFromCell(ws.Cells(i, "B")))
-        scac = ws.Cells(i, "C").Value
+        scac = Trim(CStr(ws.Cells(i, "C").Value))
         custName = ws.Cells(i, "A").Value
         origCity = ws.Cells(i, "G").Value
         origState = ws.Cells(i, "H").Value
@@ -411,7 +418,7 @@ Private Sub ApplyOutlookSignature(mail As Object, messageText As String)
             insertAt.Collapse wdCollapseStart
         End If
 
-        insertAt.InsertBefore messageText & vbCrLf & vbCrLf
+        ApplyFormattedMessage wordDoc, insertAt, messageText
     Else
         ApplyOutlookSignatureHtmlFallback mail, messageText
     End If
@@ -435,8 +442,35 @@ Private Sub ApplyOutlookSignatureHtmlFallback(mail As Object, messageText As Str
 
 End Sub
 
+Private Sub ApplyFormattedMessage(wordDoc As Object, insertAt As Object, messageText As String)
+
+    Const wdCollapseStart As Long = 1
+
+    Dim startPos As Long
+
+    insertAt.Collapse wdCollapseStart
+    startPos = insertAt.Start
+    insertAt.InsertBefore messageText & vbCrLf & vbCrLf
+    ApplyEmailMessageFont wordDoc, startPos, Len(messageText) + 2
+End Sub
+
+Private Sub ApplyEmailMessageFont(wordDoc As Object, startPos As Long, charCount As Long)
+
+    Dim fmtRange As Object
+
+    If charCount <= 0 Then Exit Sub
+
+    On Error Resume Next
+    Set fmtRange = wordDoc.Range(startPos, startPos + charCount)
+    With fmtRange.Font
+        .Name = "Times New Roman"
+        .Size = 10
+    End With
+    On Error GoTo 0
+End Sub
+
 Private Function BuildMessageHtml(messageText As String) As String
-    BuildMessageHtml = "<div style=""font-family:Calibri,Arial,sans-serif;font-size:11pt;"">" & _
+    BuildMessageHtml = "<div style=""font-family:'Times New Roman',Times,serif;font-size:10pt;"">" & _
                        PlainTextToHtml(messageText) & "</div>"
 End Function
 
@@ -672,14 +706,65 @@ End Function
 Function GetCarrierEmail(ws As Worksheet, scac As String) As String
 
     Dim r As Range
-    Set r = ws.Columns("A").Find(scac, LookAt:=xlWhole)
+    Dim key As String
 
-    If r Is Nothing Then
-        GetCarrierEmail = ""
-    Else
-        GetCarrierEmail = ws.Cells(r.Row, "C").Value
+    key = Trim(CStr(scac))
+    If key = "" Then Exit Function
+
+    Set r = ws.Columns("A").Find(key, LookAt:=xlWhole, MatchCase:=False)
+    If r Is Nothing Then Exit Function
+
+    GetCarrierEmail = Trim(CStr(ws.Cells(r.Row, "C").Value))
+End Function
+
+' Dump SCAC: column M (new) or L (legacy). Pick value that matches Carrier Email Database.
+Private Function ResolveDumpScac(wsDump As Worksheet, wsCarrier As Worksheet, rowIdx As Long) As String
+
+    Dim fromM As String, fromL As String
+
+    fromM = GetDumpCellText(wsDump, rowIdx, "M")
+    fromL = GetDumpCellText(wsDump, rowIdx, "L")
+
+    If fromM <> "" And CarrierScacExists(wsCarrier, fromM) Then
+        ResolveDumpScac = fromM
+        Exit Function
+    End If
+    If fromL <> "" And CarrierScacExists(wsCarrier, fromL) Then
+        ResolveDumpScac = fromL
+        Exit Function
     End If
 
+    If fromM <> "" Then
+        ResolveDumpScac = fromM
+    Else
+        ResolveDumpScac = fromL
+    End If
+End Function
+
+Private Function ResolveDumpCarrierName(wsDump As Worksheet, rowIdx As Long, resolvedScac As String) As String
+
+    Dim fromN As String, fromM As String
+
+    fromN = GetDumpCellText(wsDump, rowIdx, "N")
+    fromM = GetDumpCellText(wsDump, rowIdx, "M")
+
+    If fromN <> "" Then
+        ResolveDumpCarrierName = fromN
+        Exit Function
+    End If
+
+    ' Legacy dump layout: carrier name was in column M when SCAC was in L.
+    If fromM <> "" And StrComp(fromM, resolvedScac, vbTextCompare) <> 0 Then
+        ResolveDumpCarrierName = fromM
+    End If
+End Function
+
+Private Function GetDumpCellText(ws As Worksheet, rowIdx As Long, colLetter As String) As String
+    GetDumpCellText = Trim(GetLoadNoFromCell(ws.Cells(rowIdx, colLetter)))
+End Function
+
+Private Function CarrierScacExists(wsCarrier As Worksheet, scac As String) As Boolean
+    CarrierScacExists = (GetCarrierEmail(wsCarrier, scac) <> "")
 End Function
 
 Function IsExceptional(wsException As Worksheet, scac As String, custName As String) As Boolean
@@ -802,10 +887,12 @@ Private Function GetPrecheckBody(loadNo As String, eventTime As Date, useAlterna
     pickupAt = FormatPickupDateTime(eventTime)
 
     If useAlternateTemplate Then
-        GetPrecheckBody = "Load " & loadNo & " is scheduled for pickup on " & pickupAt & "." & vbCrLf & _
-                          "Please confirm the driver will be on time."
+        GetPrecheckBody = "We have Load " & loadNo & " scheduled for pickup on " & pickupAt & "." & vbCrLf & _
+                          "Please confirm whether the driver will be on time for pickup." & vbCrLf & _
+                          "Thank you for your prompt response."
     Else
-        GetPrecheckBody = "Please confirm the driver is ready for pickup scheduled on " & pickupAt & "."
+        GetPrecheckBody = "Please confirm whether your driver will be ready for pickup scheduled on " & pickupAt & "." & vbCrLf & _
+                          "Thank you for your prompt response."
     End If
 End Function
 
@@ -815,10 +902,10 @@ Private Function GetReminderBody(loadNo As String, eventTime As Date, useAlterna
 
     If useAlternateTemplate Then
         GetReminderBody = "Load " & loadNo & " was scheduled for pickup on " & pickupAt & "." & vbCrLf & _
-                          "Please confirm pickup has been completed."
+                          "Please confirm whether pickup has been completed." & vbCrLf & _
+                          "Thank you for your prompt response."
     Else
-        GetReminderBody = "Please confirm the driver has picked up load scheduled on " & pickupAt & "."
+        GetReminderBody = "Please confirm whether pickup has been completed for the load scheduled on " & pickupAt & "." & vbCrLf & _
+                          "Thank you for your prompt response."
     End If
 End Function
-
-
