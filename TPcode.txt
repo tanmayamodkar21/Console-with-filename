@@ -1,5 +1,4 @@
 Option Explicit
-
 ' ================= CONFIG =================
 Const DUMP_SHEET_NAME As String = "Sheet1"
 Const MASTER_SHEET As String = "Master_Data"
@@ -9,27 +8,22 @@ Const SETTING_SHEET As String = "Setting"
 Const PRECHECK_WINDOW_HOURS As Double = 3 / 24
 Const OUTLOOK_SIGNATURE_NAME As String = "CHI_SIGN"
 ' ==========================================
-
 Sub Run_Full_Pipeline()
     Import_Dump
     Process_Emails
     MsgBox "Automation Completed", vbInformation
 End Sub
-
 ' =====================================================
 ' IMPORT
 ' =====================================================
 Sub Import_Dump()
-
     Dim wb As Workbook, wsDump As Worksheet, wsMaster As Worksheet
     Dim lastRow As Long, nextMasterRow As Long, i As Long
     Dim loadNo As String
     Dim existingRow As Long
-
     Dim dumpPath As String
     Dim wsCarrier As Worksheet
     Dim scacVal As String, carrierNameVal As String
-
     Set wsMaster = ThisWorkbook.Sheets(MASTER_SHEET)
     Set wsCarrier = ThisWorkbook.Sheets(CARRIER_SHEET)
     dumpPath = GetDumpFilePath()
@@ -41,18 +35,13 @@ Sub Import_Dump()
         MsgBox "Dump file not found:" & vbCrLf & dumpPath, vbExclamation
         Exit Sub
     End If
-
     Set wb = Workbooks.Open(dumpPath, ReadOnly:=True)
     Set wsDump = wb.Sheets(DUMP_SHEET_NAME)
-
     lastRow = wsDump.Cells(wsDump.Rows.Count, "B").End(xlUp).Row
     nextMasterRow = wsMaster.Cells(wsMaster.Rows.Count, "B").End(xlUp).Row + 1
-
     For i = 2 To lastRow
-
         loadNo = NormalizeLoadNo(Split(GetLoadNoFromCell(wsDump.Cells(i, "B")), " ")(0))
         If loadNo = "" Then GoTo ContinueLoop
-
         existingRow = FindMasterRowByLoad(wsMaster, loadNo)
         If existingRow > 0 Then
             ' Refresh key fields for existing loads to fix stale/wrong date values.
@@ -69,7 +58,6 @@ Sub Import_Dump()
             wsMaster.Cells(existingRow, "J").Value = wsDump.Cells(i, "AL").Value
             GoTo ContinueLoop
         End If
-
         scacVal = ResolveDumpScac(wsDump, wsCarrier, i)
         carrierNameVal = ResolveDumpCarrierName(wsDump, i, scacVal)
         wsMaster.Cells(nextMasterRow, "A").Value = wsDump.Cells(i, "A").Value
@@ -83,7 +71,6 @@ Sub Import_Dump()
         wsMaster.Cells(nextMasterRow, "H").Value = wsDump.Cells(i, "W").Value
         wsMaster.Cells(nextMasterRow, "I").Value = wsDump.Cells(i, "AK").Value
         wsMaster.Cells(nextMasterRow, "J").Value = wsDump.Cells(i, "AL").Value
-
         wsMaster.Cells(nextMasterRow, "K").Value = "No"
         wsMaster.Cells(nextMasterRow, "L").Value = ""
         wsMaster.Cells(nextMasterRow, "M").Value = "No"
@@ -91,20 +78,14 @@ Sub Import_Dump()
         wsMaster.Cells(nextMasterRow, "O").Value = "Not Checked"
         wsMaster.Cells(nextMasterRow, "P").Value = "Not Checked"
         wsMaster.Cells(nextMasterRow, "Q").Value = ""
-
         nextMasterRow = nextMasterRow + 1
-
 ContinueLoop:
     Next i
-
     wb.Close False
-
 End Sub
-
 Function Exists(ws As Worksheet, val As String) As Boolean
     Exists = Not ws.Columns("B").Find(val, LookAt:=xlWhole) Is Nothing
 End Function
-
 Function FindMasterRowByLoad(ws As Worksheet, loadNo As String) As Long
     Dim r As Range
     Set r = ws.Columns("B").Find(loadNo, LookAt:=xlWhole)
@@ -114,12 +95,10 @@ Function FindMasterRowByLoad(ws As Worksheet, loadNo As String) As Long
         FindMasterRowByLoad = r.Row
     End If
 End Function
-
 ' =====================================================
 ' MAIN LOGIC
 ' =====================================================
 Sub Process_Emails()
-
     Dim ws As Worksheet, wsCarrier As Worksheet, wsTZ As Worksheet, wsException As Worksheet
     Dim i As Long, lastRow As Long
     Dim loadNo As String, scac As String, custName As String
@@ -131,55 +110,43 @@ Sub Process_Emails()
     Dim existing As Object, chainStatus As String
     Dim sendNow As Boolean
     Dim debugMsg As String
-
     Set ws = ThisWorkbook.Sheets(MASTER_SHEET)
     Set wsCarrier = ThisWorkbook.Sheets(CARRIER_SHEET)
-    Set wsTZ = ThisWorkbook.Sheets(3)
+    Set wsTZ = ThisWorkbook.Sheets(3) ' Make sure Sheet 3 index is your Timezone Sheet
     Set wsException = ThisWorkbook.Sheets(EXCEPTION_SHEET)
-
     If Not ValidateSettings() Then Exit Sub
-
     sendNow = ShouldSendEmails()
     lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
-
     For i = 2 To lastRow
-
         debugMsg = ""
-
         loadNo = NormalizeLoadNo(GetLoadNoFromCell(ws.Cells(i, "B")))
         scac = Trim(CStr(ws.Cells(i, "C").Value))
         custName = ws.Cells(i, "A").Value
         origCity = ws.Cells(i, "G").Value
         origState = ws.Cells(i, "H").Value
-
         precheck = LCase(Trim(ws.Cells(i, "M").Value))
         reminder = LCase(Trim(ws.Cells(i, "N").Value))
-
         If IsExceptional(wsException, scac, custName) Then
             ws.Cells(i, "Q").Value = "Skipped: Exceptional Carrier/Customer"
             GoTo NextRow
         End If
-
         ' Use only Start Time from column E for all timing decisions.
         eventTime = SafeConvert(ws.Cells(i, "E").Text)
         If eventTime = 0 Then
             ws.Cells(i, "Q").Value = "Invalid Start Date Conversion"
             GoTo NextRow
         End If
-
         zoneCode = GetTimezoneCode(wsTZ, origCity, origState)
         If zoneCode = "" Then
             ws.Cells(i, "Q").Value = "No Timezone Found"
             GoTo NextRow
         End If
         nowTime = GetNowForZoneFromEST(zoneCode)
-
         email = GetCarrierEmail(wsCarrier, scac)
         If email = "" Then
             ws.Cells(i, "Q").Value = "No Email Found"
             GoTo NextRow
         End If
-
         ' Check existing chain
         Set existing = GetExistingMail(loadNo)
         If Not existing Is Nothing Then
@@ -188,28 +155,23 @@ Sub Process_Emails()
             chainStatus = "no"
         End If
         ws.Cells(i, "P").Value = UCase(chainStatus)
-
         ' Reply check (any inbound mail on this load from someone other than Setting B1)
         reply = CheckReply(loadNo, GetFromAccountSetting())
         ws.Cells(i, "O").Value = reply
-
         If reply = "Reply Received" Then
             ws.Cells(i, "Q").Value = "Stopped: Reply Received"
             GoTo NextRow
         End If
-
         ' If 2nd check already sent earlier, keep stable status and stop.
         If reminder = "yes" Then
             ws.Cells(i, "Q").Value = "2nd Check Already Sent | TZ=" & zoneCode
             GoTo NextRow
         End If
-
         ' Manual protection
         If chainStatus = "yes" And precheck <> "yes" And reminder <> "yes" Then
             ws.Cells(i, "Q").Value = "Stopped: Manual Email Exists"
             GoTo NextRow
         End If
-
         ' PRECHECK
         If eventTime >= nowTime And eventTime <= nowTime + PRECHECK_WINDOW_HOURS Then
             If precheck <> "yes" Then
@@ -230,10 +192,8 @@ Sub Process_Emails()
                 GoTo NextRow
             End If
         End If
-
         ' 2ND CHECK
         If eventTime < nowTime Then
-
             ' If no chain exists, allow 2nd check even when precheck was not sent.
             If chainStatus = "no" Then
                 SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(i)
@@ -245,7 +205,6 @@ Sub Process_Emails()
                     ws.Cells(i, "Q").Value = "2nd Check drafted | TZ=" & zoneCode & _
                                              " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 End If
-
             ElseIf chainStatus = "yes" And precheck = "yes" Then
                 SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(i)
                 ws.Cells(i, "N").Value = "Yes"
@@ -256,101 +215,76 @@ Sub Process_Emails()
                     ws.Cells(i, "Q").Value = "2nd Check drafted (Thread) | TZ=" & zoneCode & _
                                              " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 End If
-
             Else
                 ws.Cells(i, "Q").Value = "Skipped: Chain Exists, No Precheck | TZ=" & zoneCode
                 GoTo NextRow
             End If
-
             ws.Cells(i, "K").Value = "Yes"
             ws.Cells(i, "L").Value = nowTime
-
         Else
             ws.Cells(i, "Q").Value = "Skipped: Time Not Reached | TZ=" & zoneCode & _
                                      " | Now=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM") & _
                                      " | Start(E)=" & Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM")
         End If
-
 NextRow:
     Next i
-
 End Sub
-
 ' =====================================================
 ' DATE FIX (FINAL)
 ' =====================================================
 Function SafeConvert(val As Variant) As Date
-
     On Error GoTo Fail
-
     Dim txt As String
     Dim d As Integer, m As Integer, y As Integer
     Dim h As Integer, minuteValue As Integer
     Dim isPM As Boolean
     Dim dateParts() As String, timeParts() As String
     Dim parts() As String
-
     txt = UCase(Trim(CStr(val)))
     If txt = "" Then GoTo Fail
-
     txt = Replace(txt, " AM", "AM")
     txt = Replace(txt, " PM", "PM")
     txt = Replace(txt, "AM", " AM")
     txt = Replace(txt, "PM", " PM")
     txt = Application.WorksheetFunction.Trim(txt)
-
     parts = Split(txt, " ")
     If UBound(parts) < 2 Then GoTo Fail
-
     dateParts = Split(parts(0), "/")
     If UBound(dateParts) <> 2 Then GoTo Fail
-
     ' Force US format: MM/DD/YYYY (do not use locale-dependent CDate)
     m = CInt(dateParts(0))
     d = CInt(dateParts(1))
     y = CInt(dateParts(2))
     If m < 1 Or m > 12 Then GoTo Fail
     If d < 1 Or d > 31 Then GoTo Fail
-
     timeParts = Split(parts(1), ":")
     If UBound(timeParts) <> 1 Then GoTo Fail
-
     h = CInt(timeParts(0))
     minuteValue = CInt(timeParts(1))
     If h < 1 Or h > 12 Then GoTo Fail
     If minuteValue < 0 Or minuteValue > 59 Then GoTo Fail
-
     isPM = (UCase(parts(2)) = "PM")
     If Not isPM And UCase(parts(2)) <> "AM" Then GoTo Fail
-
     If isPM And h < 12 Then h = h + 12
     If Not isPM And h = 12 Then h = 0
-
     SafeConvert = DateSerial(y, m, d) + TimeSerial(h, minuteValue, 0)
     Exit Function
-
 Fail:
     SafeConvert = 0
-
 End Function
-
 ' =====================================================
 ' SEND EMAIL
 ' =====================================================
 Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As Boolean, useAlternateTemplate As Boolean)
-
     Dim app As Object, mail As Object, existing As Object
     Dim greet As String
     Dim sendNow As Boolean
     Dim fromAddress As String
-
     Set app = CreateObject("Outlook.Application")
     greet = GetGreeting()
     sendNow = ShouldSendEmails()
     fromAddress = GetFromAccountSetting()
-
     Set existing = GetExistingMail(loadNo)
-
     If Not existing Is Nothing Then
         Set mail = existing.ReplyAll
     Else
@@ -358,14 +292,10 @@ Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As
         mail.To = email
         mail.Subject = "Penske Load#" & loadNo & " | Pickup Status"
     End If
-
     ApplyFromAccount app, mail, fromAddress
-
     ' CC
     EnsureCcAddress mail, fromAddress
-
     Dim messageText As String
-
     If isReminder Then
         messageText = greet & " Team," & vbCrLf & vbCrLf & _
                         GetReminderBody(loadNo, eventTime, useAlternateTemplate)
@@ -373,122 +303,83 @@ Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As
         messageText = greet & " Team," & vbCrLf & vbCrLf & _
                         GetPrecheckBody(loadNo, eventTime, useAlternateTemplate)
     End If
-
-    If Trim(CStr(mail.Body)) <> "" Then
-        messageText = messageText & vbCrLf & vbCrLf & mail.Body
-    End If
-
+    ' Note: DO NOT append mail.Body here. WordEditor automatically preserves the 
+    ' auto-generated signature and original email history when writing at Range(0,0).
     mail.BodyFormat = 2
-    ApplyOutlookSignature mail, messageText
-
+    ApplyOutlookSignature mail, messageText, sendNow
     If sendNow Then
         mail.Send
     Else
+        ' Safe fallback save in case WordEditor inspector closed without saving
+        On Error Resume Next
         mail.Save
+        On Error GoTo 0
     End If
     Application.Wait Now + TimeValue("00:00:02")
-
 End Sub
-
 ' Display loads signature; insert message with Word at the top so HTMLBody replace does not wipe it.
-Private Sub ApplyOutlookSignature(mail As Object, messageText As String)
-
-    Const wdCollapseStart As Long = 1
+Private Sub ApplyOutlookSignature(mail As Object, messageText As String, sendNow As Boolean)
     Const olSave As Long = 0
-
     Dim insp As Object
     Dim wordDoc As Object
     Dim insertAt As Object
-
     On Error Resume Next
-
     mail.Display
     DoEvents
     Application.Wait Now + TimeValue("00:00:02")
-
     Set insp = mail.GetInspector
     Set wordDoc = insp.WordEditor
-
     If Not wordDoc Is Nothing Then
-        If wordDoc.Bookmarks.Exists("_MailOriginal") Then
-            Set insertAt = wordDoc.Bookmarks("_MailOriginal").Range
-            insertAt.Collapse wdCollapseStart
-        Else
-            Set insertAt = wordDoc.Range
-            insertAt.Collapse wdCollapseStart
-        End If
-
+        ' Always insert at the very beginning (0,0) of the document to keep it above the signature
+        Set insertAt = wordDoc.Range(0, 0)
         ApplyFormattedMessage wordDoc, insertAt, messageText
     Else
         ApplyOutlookSignatureHtmlFallback mail, messageText
     End If
-
-    If Not insp Is Nothing Then insp.Close olSave
-
+    If Not sendNow Then
+        ' Only close the inspector if drafting. If sending now, mail.Send closes it.
+        If Not insp Is Nothing Then insp.Close olSave
+    End If
     On Error GoTo 0
-
 End Sub
-
 ' Only used if Word editor is unavailable. Prepends HTML without replacing signature block.
 Private Sub ApplyOutlookSignatureHtmlFallback(mail As Object, messageText As String)
-
     Dim msgHtml As String
     Dim existingHtml As String
-
     msgHtml = BuildMessageHtml(messageText)
-    existingHtml = mail.HTMLBody
-    If Len(Trim$(existingHtml)) = 0 Then existingHtml = mail.HTMLBody
-    mail.HTMLBody = msgHtml & "<br><br>" & existingHtml
-
+    existingHtml = mail.htmlBody
+    If Len(Trim$(existingHtml)) = 0 Then existingHtml = mail.htmlBody
+    mail.htmlBody = msgHtml & "<br><br>" & existingHtml
 End Sub
-
 Private Sub ApplyFormattedMessage(wordDoc As Object, insertAt As Object, messageText As String)
-
     Const wdCollapseStart As Long = 1
-
-    Dim startPos As Long
-
     insertAt.Collapse wdCollapseStart
-    startPos = insertAt.Start
+    
+    ' Insert the message text
     insertAt.InsertBefore messageText & vbCrLf & vbCrLf
-    ApplyEmailMessageFont wordDoc, startPos, Len(messageText) + 2
-End Sub
-
-Private Sub ApplyEmailMessageFont(wordDoc As Object, startPos As Long, charCount As Long)
-
-    Dim fmtRange As Object
-
-    If charCount <= 0 Then Exit Sub
-
+    
+    ' Apply the font format to the exact inserted range (insertAt auto-expands to cover it)
     On Error Resume Next
-    Set fmtRange = wordDoc.Range(startPos, startPos + charCount)
-    With fmtRange.Font
+    With insertAt.Font
         .Name = "Times New Roman"
         .Size = 10
     End With
     On Error GoTo 0
 End Sub
-
 Private Function BuildMessageHtml(messageText As String) As String
     BuildMessageHtml = "<div style=""font-family:'Times New Roman',Times,serif;font-size:10pt;"">" & _
                        PlainTextToHtml(messageText) & "</div>"
 End Function
-
 Private Function PlainTextToHtml(txt As String) As String
-
     txt = Replace(txt, "&", "&amp;")
     txt = Replace(txt, "<", "&lt;")
     txt = Replace(txt, ">", "&gt;")
     PlainTextToHtml = Replace(txt, vbCrLf, "<br>")
 End Function
-
 Private Sub EnsureCcAddress(mail As Object, addressText As String)
-
     Dim ccValue As String, candidate As String
-
     candidate = Trim(addressText)
     If candidate = "" Then Exit Sub
-
     ccValue = Trim(CStr(mail.CC))
     If InStr(1, ccValue, candidate, vbTextCompare) = 0 Then
         If ccValue <> "" Then
@@ -498,51 +389,38 @@ Private Sub EnsureCcAddress(mail As Object, addressText As String)
         End If
     End If
 End Sub
-
 Private Function GetSettingValue(cellAddress As String) As String
-
     On Error GoTo Fail
     GetSettingValue = Trim(CStr(ThisWorkbook.Sheets(SETTING_SHEET).Range(cellAddress).Value))
     Exit Function
-
 Fail:
     GetSettingValue = ""
 End Function
-
 Private Function GetFromAccountSetting() As String
     GetFromAccountSetting = GetSettingValue("B1")
 End Function
-
 Private Function GetDumpFilePath() As String
     GetDumpFilePath = GetSettingValue("B3")
 End Function
-
 Private Function ValidateSettings() As Boolean
-
     Dim fromAccount As String
     Dim dumpPath As String
-
     fromAccount = Trim(GetFromAccountSetting())
     If fromAccount = "" Then
         MsgBox "Enter From Email address in Setting sheet cell B1", vbExclamation
         ValidateSettings = False
         Exit Function
     End If
-
     dumpPath = Trim(GetDumpFilePath())
     If dumpPath = "" Then
         MsgBox "Enter Dump File path in Setting sheet cell B3", vbExclamation
         ValidateSettings = False
         Exit Function
     End If
-
     ValidateSettings = True
 End Function
-
 Private Function ShouldSendEmails() As Boolean
-
     Dim modeValue As String
-
     modeValue = UCase(GetSettingValue("B2"))
     ' Default to Send when setting is blank/unknown.
     If modeValue = "DRAFT" Then
@@ -551,19 +429,14 @@ Private Function ShouldSendEmails() As Boolean
         ShouldSendEmails = True
     End If
 End Function
-
 Private Sub ApplyFromAccount(app As Object, mail As Object, fromSetting As String)
-
     Dim ns As Object, ac As Object
     Dim wanted As String
-
     wanted = Trim(fromSetting)
     If wanted = "" Then Exit Sub
-
     On Error Resume Next
     Set ns = app.GetNamespace("MAPI")
     If ns Is Nothing Then Exit Sub
-
     For Each ac In ns.Accounts
         If MatchAccount(ac, wanted) Then
             Set mail.SendUsingAccount = ac
@@ -572,16 +445,12 @@ Private Sub ApplyFromAccount(app As Object, mail As Object, fromSetting As Strin
     Next ac
     On Error GoTo 0
 End Sub
-
 Private Function MatchAccount(ac As Object, wanted As String) As Boolean
-
     Dim smtp As String, displayName As String
-
     On Error Resume Next
     smtp = Trim(CStr(ac.SmtpAddress))
-    displayName = Trim(CStr(ac.DisplayName))
+    displayName = Trim(CStr(ac.displayName))
     On Error GoTo 0
-
     MatchAccount = False
     If smtp <> "" Then
         If StrComp(smtp, wanted, vbTextCompare) = 0 Then
@@ -595,69 +464,74 @@ Private Function MatchAccount(ac As Object, wanted As String) As Boolean
         End If
     End If
 End Function
-
 ' =====================================================
 ' EXISTING EMAIL
 ' =====================================================
 Function GetExistingMail(loadNo As String) As Object
-
     Dim app As Object, ns As Object
-    Dim inbox As Object, sent As Object, item As Object
-
+    Dim inbox As Object, sent As Object
+    Dim inboxItems As Object, sentItems As Object
+    Dim filter As String
+    Dim itm As Object
     Set app = CreateObject("Outlook.Application")
     Set ns = app.GetNamespace("MAPI")
-
     Set inbox = ns.GetDefaultFolder(6)
     Set sent = ns.GetDefaultFolder(5)
-
-    For Each item In inbox.Items
-        If IsMailItem(item) Then
-            If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
-                Set GetExistingMail = item
+    ' Search only for emails containing the exact load number in the subject
+    filter = "@SQL=""urn:schemas:httpmail:subject"" LIKE '%" & loadNo & "%'"
+    ' Restrict Inbox (Instantaneous wildcard query)
+    On Error Resume Next
+    Set inboxItems = inbox.Items.Restrict(filter)
+    If Not inboxItems Is Nothing Then
+        For Each itm In inboxItems
+            If IsMailItem(itm) Then
+                Set GetExistingMail = itm
                 Exit Function
             End If
-        End If
-    Next
-
-    For Each item In sent.Items
-        If IsMailItem(item) Then
-            If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
-                Set GetExistingMail = item
+        Next itm
+    End If
+    On Error GoTo 0
+    ' Restrict Sent (Instantaneous wildcard query)
+    On Error Resume Next
+    Set sentItems = sent.Items.Restrict(filter)
+    If Not sentItems Is Nothing Then
+        For Each itm In sentItems
+            If IsMailItem(itm) Then
+                Set GetExistingMail = itm
                 Exit Function
             End If
-        End If
-    Next
-
+        Next itm
+    End If
+    On Error GoTo 0
     Set GetExistingMail = Nothing
-
 End Function
-
 Function IsMailItem(item As Object) As Boolean
     On Error Resume Next
     IsMailItem = (item.Class = 43) ' 43 = olMail
     On Error GoTo 0
 End Function
-
 Function CheckReply(loadNo As String, ourMailbox As String) As String
-
     Dim app As Object, ns As Object
     Dim inbox As Object, item As Object
     Dim senderAddress As String
-
+    Dim inboxItems As Object
+    Dim filter As String
     loadNo = NormalizeLoadNo(loadNo)
     ourMailbox = LCase(Trim(ourMailbox))
     If loadNo = "" Or ourMailbox = "" Then
         CheckReply = "No Reply"
         Exit Function
     End If
-
     Set app = CreateObject("Outlook.Application")
     Set ns = app.GetNamespace("MAPI")
     Set inbox = ns.GetDefaultFolder(6)
-
-    For Each item In inbox.Items
-        If IsMailItem(item) Then
-            If MailMatchesLoad(item, loadNo) Then
+    filter = "@SQL=""urn:schemas:httpmail:subject"" LIKE '%" & loadNo & "%'"
+    ' Restrict Inbox (Instantaneous wildcard query)
+    On Error Resume Next
+    Set inboxItems = inbox.Items.Restrict(filter)
+    If Not inboxItems Is Nothing Then
+        For Each item In inboxItems
+            If IsMailItem(item) Then
                 senderAddress = GetSenderSmtpAddress(item)
                 If senderAddress <> "" Then
                     If Not IsOurMailboxAddress(senderAddress, ourMailbox) Then
@@ -666,24 +540,16 @@ Function CheckReply(loadNo As String, ourMailbox As String) As String
                     End If
                 End If
             End If
-        End If
-    Next
-
+        Next item
+    End If
+    On Error GoTo 0
     CheckReply = "No Reply"
 End Function
-
-Private Function MailMatchesLoad(item As Object, loadNo As String) As Boolean
-    MailMatchesLoad = (InStr(1, CStr(item.Subject), loadNo, vbTextCompare) > 0)
-End Function
-
 Private Function GetSenderSmtpAddress(item As Object) As String
-
     Dim addr As String
     Dim exUser As Object
-
     On Error Resume Next
     addr = ""
-
     If item.SenderEmailType = "SMTP" Then
         addr = item.SenderEmailAddress
     ElseIf Not item.Sender Is Nothing Then
@@ -692,39 +558,27 @@ Private Function GetSenderSmtpAddress(item As Object) As String
             addr = exUser.PrimarySmtpAddress
         End If
     End If
-
     If addr = "" Then addr = item.SenderEmailAddress
     On Error GoTo 0
-
     GetSenderSmtpAddress = LCase(Trim(addr))
 End Function
-
 Private Function IsOurMailboxAddress(senderAddress As String, ourMailbox As String) As Boolean
     IsOurMailboxAddress = (StrComp(LCase(Trim(senderAddress)), LCase(Trim(ourMailbox)), vbTextCompare) = 0)
 End Function
-
 Function GetCarrierEmail(ws As Worksheet, scac As String) As String
-
     Dim r As Range
     Dim key As String
-
     key = Trim(CStr(scac))
     If key = "" Then Exit Function
-
     Set r = ws.Columns("A").Find(key, LookAt:=xlWhole, MatchCase:=False)
     If r Is Nothing Then Exit Function
-
     GetCarrierEmail = Trim(CStr(ws.Cells(r.Row, "C").Value))
 End Function
-
 ' Dump SCAC: column M (new) or L (legacy). Pick value that matches Carrier Email Database.
 Private Function ResolveDumpScac(wsDump As Worksheet, wsCarrier As Worksheet, rowIdx As Long) As String
-
     Dim fromM As String, fromL As String
-
     fromM = GetDumpCellText(wsDump, rowIdx, "M")
     fromL = GetDumpCellText(wsDump, rowIdx, "L")
-
     If fromM <> "" And CarrierScacExists(wsCarrier, fromM) Then
         ResolveDumpScac = fromM
         Exit Function
@@ -733,50 +587,38 @@ Private Function ResolveDumpScac(wsDump As Worksheet, wsCarrier As Worksheet, ro
         ResolveDumpScac = fromL
         Exit Function
     End If
-
     If fromM <> "" Then
         ResolveDumpScac = fromM
     Else
         ResolveDumpScac = fromL
     End If
 End Function
-
 Private Function ResolveDumpCarrierName(wsDump As Worksheet, rowIdx As Long, resolvedScac As String) As String
-
     Dim fromN As String, fromM As String
-
     fromN = GetDumpCellText(wsDump, rowIdx, "N")
     fromM = GetDumpCellText(wsDump, rowIdx, "M")
-
     If fromN <> "" Then
         ResolveDumpCarrierName = fromN
         Exit Function
     End If
-
     ' Legacy dump layout: carrier name was in column M when SCAC was in L.
     If fromM <> "" And StrComp(fromM, resolvedScac, vbTextCompare) <> 0 Then
         ResolveDumpCarrierName = fromM
     End If
 End Function
-
 Private Function GetDumpCellText(ws As Worksheet, rowIdx As Long, colLetter As String) As String
     GetDumpCellText = Trim(GetLoadNoFromCell(ws.Cells(rowIdx, colLetter)))
 End Function
-
 Private Function CarrierScacExists(wsCarrier As Worksheet, scac As String) As Boolean
     CarrierScacExists = (GetCarrierEmail(wsCarrier, scac) <> "")
 End Function
-
 Function IsExceptional(wsException As Worksheet, scac As String, custName As String) As Boolean
     Dim lastRow As Long, i As Long
     Dim nm As String, typ As String
-
     lastRow = wsException.Cells(wsException.Rows.Count, "A").End(xlUp).Row
-
     For i = 2 To lastRow
         nm = LCase(Trim(wsException.Cells(i, "A").Value))
         typ = LCase(Trim(wsException.Cells(i, "B").Value))
-
         If typ = "carrier" Then
             If nm <> "" And nm = LCase(Trim(scac)) Then
                 IsExceptional = True
@@ -789,16 +631,12 @@ Function IsExceptional(wsException As Worksheet, scac As String, custName As Str
             End If
         End If
     Next
-
     IsExceptional = False
 End Function
-
 Function GetTimezoneCode(wsTZ As Worksheet, city As String, st As String) As String
     Dim lastRow As Long, i As Long
     Dim c As String, s As String
-
     lastRow = wsTZ.Cells(wsTZ.Rows.Count, "A").End(xlUp).Row
-
     For i = 2 To lastRow
         c = LCase(Trim(wsTZ.Cells(i, "A").Value))
         s = LCase(Trim(wsTZ.Cells(i, "B").Value))
@@ -807,10 +645,8 @@ Function GetTimezoneCode(wsTZ As Worksheet, city As String, st As String) As Str
             Exit Function
         End If
     Next
-
     GetTimezoneCode = ""
 End Function
-
 Function NormalizeZoneCode(rawZone As String) As String
     Dim z As String
     z = UCase(Trim(rawZone))
@@ -818,13 +654,10 @@ Function NormalizeZoneCode(rawZone As String) As String
     z = Replace(z, " ", "")
     NormalizeZoneCode = z
 End Function
-
 Function GetNowForZoneFromEST(zoneCode As String) As Date
     Dim zoneTxt As String
-
     zoneTxt = NormalizeZoneCode(zoneCode)
-
-    ' User requested to treat system Now as EST baseline.
+    ' Treat system Now as EST baseline.
     Select Case zoneTxt
         Case "EST", "EDT"
             GetNowForZoneFromEST = Now
@@ -838,7 +671,6 @@ Function GetNowForZoneFromEST(zoneCode As String) As Date
             GetNowForZoneFromEST = Now
     End Select
 End Function
-
 Function GetGreeting() As String
     Dim h As Integer: h = Hour(Now)
     If h < 12 Then
@@ -849,57 +681,47 @@ Function GetGreeting() As String
         GetGreeting = "Good Evening"
     End If
 End Function
-
 ' Alternate by Excel row in column B: B1/A, B2/B, B3/A, B4/B, ...
 ' Odd row = template A, even row = template B (same on every PC).
 Private Function UseAlternateEmailTemplate(excelRow As Long) As Boolean
     UseAlternateEmailTemplate = (excelRow Mod 2 = 0)
 End Function
-
 ' Read displayed cell text first (.Text) to avoid scientific notation / rounding on other systems.
 Private Function GetLoadNoFromCell(cell As Range) As String
-
     Dim txt As String
-
     On Error Resume Next
     txt = Trim$(cell.Text)
     If Err.Number <> 0 Or txt = "" Then txt = Trim$(CStr(cell.Value))
     On Error GoTo 0
-
     GetLoadNoFromCell = txt
 End Function
-
 Private Function NormalizeLoadNo(val As Variant) As String
-
     If IsEmpty(val) Or IsNull(val) Then
         NormalizeLoadNo = ""
     Else
         NormalizeLoadNo = Trim$(CStr(val))
     End If
 End Function
-
 Private Function FormatPickupDateTime(eventTime As Date) As String
     FormatPickupDateTime = Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM")
 End Function
-
 Private Function GetPrecheckBody(loadNo As String, eventTime As Date, useAlternateTemplate As Boolean) As String
     Dim pickupAt As String
     pickupAt = FormatPickupDateTime(eventTime)
-
     If useAlternateTemplate Then
         GetPrecheckBody = "We have Load " & loadNo & " scheduled for pickup on " & pickupAt & "." & vbCrLf & _
                           "Please confirm whether the driver will be on time for pickup." & vbCrLf & _
+                          "Additionally, please share the driver details / tracking link for better visibility." & vbCrLf & _
                           "Thank you for your prompt response."
     Else
         GetPrecheckBody = "Please confirm whether your driver will be ready for pickup scheduled on " & pickupAt & "." & vbCrLf & _
+                          "Additionally, please share the driver details / tracking link for better visibility." & vbCrLf & _
                           "Thank you for your prompt response."
     End If
 End Function
-
 Private Function GetReminderBody(loadNo As String, eventTime As Date, useAlternateTemplate As Boolean) As String
     Dim pickupAt As String
     pickupAt = FormatPickupDateTime(eventTime)
-
     If useAlternateTemplate Then
         GetReminderBody = "Load " & loadNo & " was scheduled for pickup on " & pickupAt & "." & vbCrLf & _
                           "Please confirm whether pickup has been completed." & vbCrLf & _
