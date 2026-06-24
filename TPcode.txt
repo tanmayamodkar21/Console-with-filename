@@ -128,7 +128,7 @@ ContinueLoop:
     For j = 2 To lastMasterRow
         masterLoadNo = NormalizeLoadNo(GetLoadNoFromCell(wsMaster.Cells(j, "B")))
         If masterLoadNo <> "" Then
-            If Not dumpLoads.Exists(masterLoadNo) Then
+            if Not dumpLoads.Exists(masterLoadNo) Then
                 masterStatus = LCase(Trim(wsMaster.Cells(j, "Q").Value))
                 
                 ' If load is not already marked as picked up, stopped, or checked-in
@@ -234,23 +234,24 @@ Sub Process_Emails()
             GoTo NextRow
         End If
 
-        ' Check existing chain (Primary and Secondary mailboxes)
-        Dim foundInSecondary As Boolean
-        foundInSecondary = False
-        Set existing = GetExistingMail(loadNo, foundInSecondary)
+        ' Check existing chain across ALL configured/shared mailboxes
+        Dim mailboxName As String
+        mailboxName = ""
+        Set existing = GetExistingMail(loadNo, mailboxName)
         
         If Not existing Is Nothing Then
-            If foundInSecondary Then
-                chainStatus = "yes (secondary)"
+            chainStatus = "yes"
+            If mailboxName <> "" Then
+                ws.Cells(i, "P").Value = "YES (" & mailboxName & ")"
             Else
-                chainStatus = "yes"
+                ws.Cells(i, "P").Value = "YES"
             End If
         Else
             chainStatus = "no"
+            ws.Cells(i, "P").Value = "NO"
         End If
-        ws.Cells(i, "P").Value = UCase(chainStatus)
 
-        ' Reply check (checks both primary and secondary mailboxes for inbound carrier replies)
+        ' Reply check (checks ALL inbox folders for inbound carrier replies)
         reply = CheckReply(loadNo, GetFromAccountSetting())
         ws.Cells(i, "O").Value = reply
 
@@ -266,7 +267,7 @@ Sub Process_Emails()
         End If
 
         ' Manual protection
-        If InStr(1, chainStatus, "yes", vbTextCompare) > 0 And precheck <> "yes" And reminder <> "yes" Then
+        If chainStatus = "yes" And precheck <> "yes" And reminder <> "yes" Then
             ws.Cells(i, "Q").Value = "Stopped: Manual Email Exists"
             GoTo NextRow
         End If
@@ -307,7 +308,7 @@ Sub Process_Emails()
                                              " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 End If
 
-            ElseIf InStr(1, chainStatus, "yes", vbTextCompare) > 0 And precheck = "yes" Then
+            ElseIf chainStatus = "yes" And precheck = "yes" Then
                 SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(i)
                 ws.Cells(i, "N").Value = "Yes"
                 If sendNow Then
@@ -404,15 +405,15 @@ Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As
     Dim greet As String
     Dim sendNow As Boolean
     Dim fromAddress As String
-    Dim foundInSecondary As Boolean
+    Dim mailboxName As String
 
     Set app = CreateObject("Outlook.Application")
     greet = GetGreeting()
     sendNow = ShouldSendEmails()
     fromAddress = GetFromAccountSetting()
 
-    foundInSecondary = False
-    Set existing = GetExistingMail(loadNo, foundInSecondary)
+    mailboxName = ""
+    Set existing = GetExistingMail(loadNo, mailboxName)
 
     If Not existing Is Nothing Then
         Set mail = existing.ReplyAll
@@ -487,7 +488,7 @@ Private Sub ApplyOutlookSignature(mail As Object, messageText As String, sendNow
     End If
 
     If Not sendNow Then
-        if Not insp Is Nothing Then insp.Close olSave
+        If Not insp Is Nothing Then insp.Close olSave
     End If
 
     On Error GoTo 0
@@ -666,51 +667,57 @@ End Function
 ' =====================================================
 ' EXISTING EMAIL
 ' =====================================================
-Function GetExistingMail(loadNo As String, ByRef outFoundInSecondary As Boolean) As Object
+Function GetExistingMail(loadNo As String, ByRef outMailboxName As String) As Object
 
-    Dim inbox As Object, sent As Object
-    Dim fromEmail As String, secondaryEmail As String
+    Dim app As Object, ns As Object
+    Dim folder As Object, inboxFolder As Object, sentFolder As Object
     Dim foundMail As Object
 
-    outFoundInSecondary = False
-    fromEmail = GetFromAccountSetting()
-    secondaryEmail = GetSecondaryAccountSetting() ' Cell B4
-
-    ' 1. Check Primary Mailbox folders
-    Call GetMailboxFolders(fromEmail, inbox, sent, True)
-
-    Set foundMail = FindMailInFolder(inbox, loadNo)
-    If Not foundMail Is Nothing Then
-        Set GetExistingMail = foundMail
-        Exit Function
-    End If
-
-    Set foundMail = FindMailInFolder(sent, loadNo)
-    If Not foundMail Is Nothing Then
-        Set GetExistingMail = foundMail
-        Exit Function
-    End If
-
-    ' 2. Check Secondary Mailbox folders (if configured)
-    If secondaryEmail <> "" Then
-        Call GetMailboxFolders(secondaryEmail, inbox, sent, False)
-
-        Set foundMail = FindMailInFolder(inbox, loadNo)
-        If Not foundMail Is Nothing Then
-            outFoundInSecondary = True
-            Set GetExistingMail = foundMail
-            Exit Function
-        End If
-
-        Set foundMail = FindMailInFolder(sent, loadNo)
-        If Not foundMail Is Nothing Then
-            outFoundInSecondary = True
-            Set GetExistingMail = foundMail
-            Exit Function
-        End If
-    End If
-
+    outMailboxName = ""
     Set GetExistingMail = Nothing
+
+    Set app = CreateObject("Outlook.Application")
+    Set ns = app.GetNamespace("MAPI")
+
+    On Error Resume Next
+    For Each folder In ns.Folders
+        ' Skip non-mailbox root folders
+        If InStr(1, folder.Name, "Public Folders", vbTextCompare) > 0 Or _
+           InStr(1, folder.Name, "Internet Calendars", vbTextCompare) > 0 Or _
+           InStr(1, folder.Name, "SharePoint", vbTextCompare) > 0 Then
+            GoTo NextFolder
+        End If
+
+        ' Check Inbox
+        Set inboxFolder = Nothing
+        Set inboxFolder = folder.Folders("Inbox")
+        If Not inboxFolder Is Nothing Then
+            Set foundMail = FindMailInFolder(inboxFolder, loadNo)
+            If Not foundMail Is Nothing Then
+                outMailboxName = folder.Name
+                Set GetExistingMail = foundMail
+                Exit Function
+            End If
+        End If
+
+        ' Check Sent Items
+        Set sentFolder = Nothing
+        Set sentFolder = folder.Folders("Sent Items")
+        If sentFolder Is Nothing Then Set sentFolder = folder.Folders("Sent Messages")
+        If sentFolder Is Nothing Then Set sentFolder = folder.Folders("Sent")
+        
+        If Not sentFolder Is Nothing Then
+            Set foundMail = FindMailInFolder(sentFolder, loadNo)
+            If Not foundMail Is Nothing Then
+                outMailboxName = folder.Name
+                Set GetExistingMail = foundMail
+                Exit Function
+            End If
+        End If
+
+NextFolder:
+    Next folder
+    On Error GoTo 0
 
 End Function
 
@@ -722,36 +729,43 @@ End Function
 
 Function CheckReply(loadNo As String, ourMailbox As String) As String
 
-    Dim inbox As Object
-    Dim secondaryMailbox As String
+    Dim app As Object, ns As Object
+    Dim folder As Object, inboxFolder As Object
     Dim replyStatus As String
 
     loadNo = NormalizeLoadNo(loadNo)
     ourMailbox = LCase(Trim(ourMailbox))
-    secondaryMailbox = LCase(Trim(GetSecondaryAccountSetting()))
 
     If loadNo = "" Or ourMailbox = "" Then
         CheckReply = "No Reply"
         Exit Function
     End If
 
-    ' 1. Check Primary Mailbox Inbox
-    Call GetMailboxFolders(ourMailbox, inbox, Nothing, True)
-    replyStatus = FindReplyInFolder(inbox, loadNo, ourMailbox, secondaryMailbox)
-    If replyStatus = "Reply Received" Then
-        CheckReply = "Reply Received"
-        Exit Function
-    End If
+    Set app = CreateObject("Outlook.Application")
+    Set ns = app.GetNamespace("MAPI")
 
-    ' 2. Check Secondary Mailbox Inbox (if configured)
-    If secondaryMailbox <> "" Then
-        Call GetMailboxFolders(secondaryMailbox, inbox, Nothing, False)
-        replyStatus = FindReplyInFolder(inbox, loadNo, ourMailbox, secondaryMailbox)
-        If replyStatus = "Reply Received" Then
-            CheckReply = "Reply Received"
-            Exit Function
+    On Error Resume Next
+    For Each folder In ns.Folders
+        ' Skip non-mailbox root folders
+        If InStr(1, folder.Name, "Public Folders", vbTextCompare) > 0 Or _
+           InStr(1, folder.Name, "Internet Calendars", vbTextCompare) > 0 Or _
+           InStr(1, folder.Name, "SharePoint", vbTextCompare) > 0 Then
+            GoTo NextFolder
         End If
-    End If
+
+        Set inboxFolder = Nothing
+        Set inboxFolder = folder.Folders("Inbox")
+        If Not inboxFolder Is Nothing Then
+            replyStatus = FindReplyInFolder(inboxFolder, loadNo)
+            If replyStatus = "Reply Received" Then
+                CheckReply = "Reply Received"
+                Exit Function
+            End If
+        End If
+
+NextFolder:
+    Next folder
+    On Error GoTo 0
 
     CheckReply = "No Reply"
 End Function
@@ -785,8 +799,8 @@ Private Function FindMailInFolder(folder As Object, loadNo As String) As Object
     Next i
 End Function
 
-' Search a specific inbox folder for an inbound carrier reply (not sent by us or secondary mailbox) matching the load number
-Private Function FindReplyInFolder(folder As Object, loadNo As String, ourMailbox As String, secondaryMailbox As String) As String
+' Search a specific inbox folder for an inbound carrier reply (not sent by any of our mailboxes) matching the load number
+Private Function FindReplyInFolder(folder As Object, loadNo As String) As String
     Dim items As Object
     Dim item As Object
     Dim i As Long
@@ -810,8 +824,7 @@ Private Function FindReplyInFolder(folder As Object, loadNo As String, ourMailbo
             If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
                 senderAddress = GetSenderSmtpAddress(item)
                 If senderAddress <> "" Then
-                    If Not IsOurMailboxAddress(senderAddress, ourMailbox) And _
-                       Not IsOurMailboxAddress(senderAddress, secondaryMailbox) Then
+                    If Not IsOurSenderAddress(senderAddress) Then
                         FindReplyInFolder = "Reply Received"
                         Exit Function
                     End If
@@ -838,7 +851,7 @@ Private Function GetSenderSmtpAddress(item As Object) As String
         End If
     End If
 
-    If addr = "" Then addr = item.SenderEmailAddress
+    if addr = "" Then addr = item.SenderEmailAddress
     On Error GoTo 0
 
     GetSenderSmtpAddress = LCase(Trim(addr))
@@ -846,6 +859,36 @@ End Function
 
 Private Function IsOurMailboxAddress(senderAddress As String, ourMailbox As String) As Boolean
     IsOurMailboxAddress = (StrComp(LCase(Trim(senderAddress)), LCase(Trim(ourMailbox)), vbTextCompare) = 0)
+End Function
+
+Private Function IsOurSenderAddress(senderAddress As String) As Boolean
+    Dim app As Object, ns As Object
+    Dim ac As Object
+    Dim primary As String, secondary As String
+    
+    IsOurSenderAddress = False
+    senderAddress = LCase(Trim(senderAddress))
+    If senderAddress = "" Then Exit Function
+    
+    primary = LCase(Trim(GetFromAccountSetting()))
+    secondary = LCase(Trim(GetSecondaryAccountSetting()))
+    
+    If senderAddress = primary Or (secondary <> "" And senderAddress = secondary) Then
+        IsOurSenderAddress = True
+        Exit Function
+    End If
+    
+    Set app = CreateObject("Outlook.Application")
+    Set ns = app.GetNamespace("MAPI")
+    
+    On Error Resume Next
+    For Each ac In ns.Accounts
+        If LCase(ac.SmtpAddress) = senderAddress Then
+            IsOurSenderAddress = True
+            Exit Function
+        End If
+    Next ac
+    On Error GoTo 0
 End Function
 
 ' Helper to retrieve mailbox folders for specific account or shared mailbox by email address
