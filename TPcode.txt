@@ -422,10 +422,20 @@ Sub SendMail(loadNo As String, email As String, eventTime As Date, isReminder As
         mail.Subject = "Penske Load#" & loadNo & " | Pickup Status"
     End If
 
+    ' Apply Sender Account properties (both SendUsingAccount and SentOnBehalfOfName)
     ApplyFromAccount app, mail, fromAddress
 
     ' CC
     EnsureCcAddress mail, fromAddress
+
+    ' Force Outlook to save the sent email copy directly inside the Sent Items folder of the B1 mailbox
+    Dim fromInbox As Object, fromSent As Object
+    Call GetMailboxFolders(fromAddress, fromInbox, fromSent, False)
+    If Not fromSent Is Nothing Then
+        On Error Resume Next
+        Set mail.SaveSentMessageFolder = fromSent
+        On Error GoTo 0
+    End If
 
     Dim messageText As String
 
@@ -606,6 +616,7 @@ Private Sub ApplyFromAccount(app As Object, mail As Object, fromSetting As Strin
 
     Dim ns As Object, ac As Object
     Dim wanted As String
+    Dim accountFound As Boolean
 
     wanted = Trim(fromSetting)
     If wanted = "" Then Exit Sub
@@ -614,12 +625,18 @@ Private Sub ApplyFromAccount(app As Object, mail As Object, fromSetting As Strin
     Set ns = app.GetNamespace("MAPI")
     If ns Is Nothing Then Exit Sub
 
+    accountFound = False
     For Each ac In ns.Accounts
         If MatchAccount(ac, wanted) Then
             Set mail.SendUsingAccount = ac
-            Exit Sub
+            accountFound = True
+            Exit For
         End If
     Next ac
+    
+    ' Set SentOnBehalfOfName (crucial for shared/delegate mailboxes to send correctly)
+    mail.SentOnBehalfOfName = wanted
+    
     On Error GoTo 0
 End Sub
 
