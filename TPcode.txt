@@ -11,9 +11,54 @@ Const OUTLOOK_SIGNATURE_NAME As String = "CHI_SIGN"
 ' ==========================================
 
 Sub Run_Full_Pipeline()
+    Dim startTime As Double
+    Dim endTime As Double
+    Dim elapsedSeconds As Double
+    Dim minutes As Long
+    Dim seconds As Long
+    Dim timeMsg As String
+
+    startTime = Timer
+    
     Import_Dump
     Process_Emails
-    MsgBox "Automation Completed", vbInformation
+    
+    endTime = Timer
+    elapsedSeconds = endTime - startTime
+    
+    ' Handle midnight rollover safety
+    If elapsedSeconds < 0 Then elapsedSeconds = elapsedSeconds + 86400
+    
+    ' Format elapsed time
+    If elapsedSeconds < 60 Then
+        timeMsg = Format(elapsedSeconds, "0.0") & " seconds"
+    Else
+        minutes = Int(elapsedSeconds / 60)
+        seconds = Int(elapsedSeconds Mod 60)
+        timeMsg = minutes & " min " & seconds & " sec"
+    End If
+
+    MsgBox "Automation Completed" & vbCrLf & "Execution Time: " & timeMsg, vbInformation
+End Sub
+
+' =====================================================
+' BROWSE FILE DIALOG
+' =====================================================
+Sub Browse_Dump_File()
+    Dim fd As Object
+    Dim selectedItem As Variant
+
+    Set fd = Application.FileDialog(3) ' 3 = msoFileDialogFile
+    With fd
+        .Title = "Select Dump Excel File"
+        .Filters.Clear
+        .Filters.Add "Excel Files", "*.xls; *.xlsx; *.xlsm; *.csv"
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            selectedItem = .SelectedItems(1)
+            ThisWorkbook.Sheets(SETTING_SHEET).Range("B3").Value = selectedItem
+        End If
+    End With
 End Sub
 
 ' =====================================================
@@ -80,7 +125,7 @@ Sub Import_Dump()
             ' Log driver checked-in time (Column R)
             wsMaster.Cells(existingRow, "R").Value = actualTimeVal
             If actualTimeVal <> "" Then
-                wsMaster.Cells(existingRow, "Q").Value = "Driver Checked In | Actual Time=" & actualTimeVal
+                wsMaster.Cells(existingRow, "Q").Value = "[STATUS] Driver Checked In | Actual Time=" & actualTimeVal
             End If
             
             GoTo ContinueLoop
@@ -107,7 +152,7 @@ Sub Import_Dump()
         ' Log driver checked-in time (Column R)
         wsMaster.Cells(nextMasterRow, "R").Value = actualTimeVal
         If actualTimeVal <> "" Then
-            wsMaster.Cells(nextMasterRow, "Q").Value = "Driver Checked In | Actual Time=" & actualTimeVal
+            wsMaster.Cells(nextMasterRow, "Q").Value = "[STATUS] Driver Checked In | Actual Time=" & actualTimeVal
         Else
             wsMaster.Cells(nextMasterRow, "Q").Value = ""
         End If
@@ -128,14 +173,14 @@ ContinueLoop:
     For j = 2 To lastMasterRow
         masterLoadNo = NormalizeLoadNo(GetLoadNoFromCell(wsMaster.Cells(j, "B")))
         If masterLoadNo <> "" Then
-            if Not dumpLoads.Exists(masterLoadNo) Then
+            If Not dumpLoads.Exists(masterLoadNo) Then
                 masterStatus = LCase(Trim(wsMaster.Cells(j, "Q").Value))
                 
                 ' If load is not already marked as picked up, stopped, or checked-in
                 If InStr(1, masterStatus, "picked up", vbTextCompare) = 0 And _
                    InStr(1, masterStatus, "stopped", vbTextCompare) = 0 And _
                    InStr(1, masterStatus, "checked in", vbTextCompare) = 0 Then
-                    wsMaster.Cells(j, "Q").Value = "Picked Up (Missing from Dump)"
+                    wsMaster.Cells(j, "Q").Value = "[COMPLETED] Picked Up (Missing from Dump)"
                 End If
             End If
         End If
@@ -210,31 +255,31 @@ Sub Process_Emails()
         reminder = LCase(Trim(ws.Cells(i, "N").Value))
 
         If IsExceptional(wsException, scac, custName) Then
-            ws.Cells(i, "Q").Value = "Skipped: Exceptional Carrier/Customer"
+            ws.Cells(i, "Q").Value = "[SKIP] Exceptional Carrier/Customer"
             GoTo NextRow
         End If
 
         ' Use only Start Time from column E for all timing decisions.
         eventTime = SafeConvert(ws.Cells(i, "E").Text)
         If eventTime = 0 Then
-            ws.Cells(i, "Q").Value = "Invalid Start Date Conversion"
+            ws.Cells(i, "Q").Value = "[ERROR] Invalid Start Date in Column E"
             GoTo NextRow
         End If
 
         zoneCode = GetTimezoneCode(wsTZ, origCity, origState)
         If zoneCode = "" Then
-            ws.Cells(i, "Q").Value = "No Timezone Found"
+            ws.Cells(i, "Q").Value = "[ERROR] Timezone not found for Origin City/State"
             GoTo NextRow
         End If
         nowTime = GetNowForZoneFromEST(zoneCode)
 
         email = GetCarrierEmail(wsCarrier, scac)
         If email = "" Then
-            ws.Cells(i, "Q").Value = "No Email Found"
+            ws.Cells(i, "Q").Value = "[ERROR] Carrier Email record missing in Database"
             GoTo NextRow
         End If
 
-        ' Check existing chain across ALL configured/shared mailboxes
+        ' Check existing chain across ALL configured/shared mailboxes (Direct search)
         Dim mailboxName As String
         mailboxName = ""
         Set existing = GetExistingMail(loadNo, mailboxName)
@@ -255,20 +300,20 @@ Sub Process_Emails()
         reply = CheckReply(loadNo, GetFromAccountSetting())
         ws.Cells(i, "O").Value = reply
 
-        If reply = "Reply Received" Then
-            ws.Cells(i, "Q").Value = "Stopped: Reply Received"
+        If reply = "Response Found" Then
+            ws.Cells(i, "Q").Value = "[STOP] Stopped: Response Found"
             GoTo NextRow
         End If
 
         ' If 2nd check already sent earlier, keep stable status and stop.
         If reminder = "yes" Then
-            ws.Cells(i, "Q").Value = "2nd Check Already Sent | TZ=" & zoneCode
+            ws.Cells(i, "Q").Value = "[COMPLETED] Reminder email already sent (" & zoneCode & ")"
             GoTo NextRow
         End If
 
         ' Manual protection
         If chainStatus = "yes" And precheck <> "yes" And reminder <> "yes" Then
-            ws.Cells(i, "Q").Value = "Stopped: Manual Email Exists"
+            ws.Cells(i, "Q").Value = "[STOP] Stopped: Manual email exists on thread"
             GoTo NextRow
         End If
 
@@ -280,15 +325,15 @@ Sub Process_Emails()
                 ws.Cells(i, "K").Value = "Yes"
                 ws.Cells(i, "L").Value = nowTime
                 If sendNow Then
-                    ws.Cells(i, "Q").Value = "Precheck Sent | TZ=" & zoneCode & _
-                                             " | SentAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                    ws.Cells(i, "Q").Value = "[SENT] Precheck email sent | TZ=" & zoneCode & _
+                                             " | SentAt=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 Else
-                    ws.Cells(i, "Q").Value = "Precheck email drafted | TZ=" & zoneCode & _
-                                             " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                    ws.Cells(i, "Q").Value = "[DRAFT] Precheck email drafted | TZ=" & zoneCode & _
+                                             " | DraftedAt=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 End If
                 GoTo NextRow
             Else
-                ws.Cells(i, "Q").Value = "Precheck Already Sent | TZ=" & zoneCode
+                ws.Cells(i, "Q").Value = "[SKIP] Precheck email already sent (" & zoneCode & ")"
                 GoTo NextRow
             End If
         End If
@@ -301,26 +346,26 @@ Sub Process_Emails()
                 SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(i)
                 ws.Cells(i, "N").Value = "Yes"
                 If sendNow Then
-                    ws.Cells(i, "Q").Value = "2nd Check Sent | TZ=" & zoneCode & _
-                                             " | SentAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                    ws.Cells(i, "Q").Value = "[SENT] 2nd Check email sent | TZ=" & zoneCode & _
+                                             " | SentAt=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 Else
-                    ws.Cells(i, "Q").Value = "2nd Check drafted | TZ=" & zoneCode & _
-                                             " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                    ws.Cells(i, "Q").Value = "[DRAFT] 2nd Check email drafted | TZ=" & zoneCode & _
+                                             " | DraftedAt=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 End If
 
             ElseIf chainStatus = "yes" And precheck = "yes" Then
                 SendMail loadNo, email, eventTime, True, UseAlternateEmailTemplate(i)
                 ws.Cells(i, "N").Value = "Yes"
                 If sendNow Then
-                    ws.Cells(i, "Q").Value = "2nd Check Sent (Thread) | TZ=" & zoneCode & _
-                                             " | SentAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                    ws.Cells(i, "Q").Value = "[SENT] 2nd Check (Thread Reply) sent | TZ=" & zoneCode & _
+                                             " | SentAt=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 Else
-                    ws.Cells(i, "Q").Value = "2nd Check drafted (Thread) | TZ=" & zoneCode & _
-                                             " | DraftedAt(TZ)=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
+                    ws.Cells(i, "Q").Value = "[DRAFT] 2nd Check (Thread Reply) drafted | TZ=" & zoneCode & _
+                                             " | DraftedAt=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM")
                 End If
 
             Else
-                ws.Cells(i, "Q").Value = "Skipped: Chain Exists, No Precheck | TZ=" & zoneCode
+                ws.Cells(i, "Q").Value = "[SKIP] Stopped: Email chain exists but Precheck was not sent"
                 GoTo NextRow
             End If
 
@@ -328,9 +373,9 @@ Sub Process_Emails()
             ws.Cells(i, "L").Value = nowTime
 
         Else
-            ws.Cells(i, "Q").Value = "Skipped: Time Not Reached | TZ=" & zoneCode & _
+            ws.Cells(i, "Q").Value = "[SKIP] Time not reached | TZ=" & zoneCode & _
                                      " | Now=" & Format(nowTime, "dd-mmm-yyyy hh:mm AM/PM") & _
-                                     " | Start(E)=" & Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM")
+                                     " | Pickup=" & Format(eventTime, "dd-mmm-yyyy hh:mm AM/PM")
         End If
 
 NextRow:
@@ -665,19 +710,24 @@ Private Function MatchAccount(ac As Object, wanted As String) As Boolean
 End Function
 
 ' =====================================================
-' EXISTING EMAIL
+' EXISTING EMAIL (Direct Targeted Search, No Caps)
 ' =====================================================
 Function GetExistingMail(loadNo As String, ByRef outMailboxName As String) As Object
 
     Dim app As Object, ns As Object
     Dim folder As Object, inboxFolder As Object, sentFolder As Object
-    Dim foundMail As Object
+    Dim inboxItems As Object, sentItems As Object
+    Dim filter As String
+    Dim itm As Object
 
     outMailboxName = ""
     Set GetExistingMail = Nothing
 
     Set app = CreateObject("Outlook.Application")
     Set ns = app.GetNamespace("MAPI")
+
+    ' Fast direct server-side database filter for subject containing the load number
+    filter = "@SQL=""urn:schemas:httpmail:subject"" LIKE '%" & loadNo & "%'"
 
     On Error Resume Next
     For Each folder In ns.Folders
@@ -688,30 +738,36 @@ Function GetExistingMail(loadNo As String, ByRef outMailboxName As String) As Ob
             GoTo NextFolder
         End If
 
-        ' Check Inbox
-        Set inboxFolder = Nothing
+        ' Search Inbox
         Set inboxFolder = folder.Folders("Inbox")
         If Not inboxFolder Is Nothing Then
-            Set foundMail = FindMailInFolder(inboxFolder, loadNo)
-            If Not foundMail Is Nothing Then
-                outMailboxName = folder.Name
-                Set GetExistingMail = foundMail
-                Exit Function
+            Set inboxItems = inboxFolder.Items.Restrict(filter)
+            If Not inboxItems Is Nothing Then
+                For Each itm In inboxItems
+                    If IsMailItem(itm) Then
+                        outMailboxName = folder.Name
+                        Set GetExistingMail = itm
+                        Exit Function
+                    End If
+                Next itm
             End If
         End If
 
-        ' Check Sent Items
-        Set sentFolder = Nothing
+        ' Search Sent Items
         Set sentFolder = folder.Folders("Sent Items")
         If sentFolder Is Nothing Then Set sentFolder = folder.Folders("Sent Messages")
         If sentFolder Is Nothing Then Set sentFolder = folder.Folders("Sent")
         
         If Not sentFolder Is Nothing Then
-            Set foundMail = FindMailInFolder(sentFolder, loadNo)
-            If Not foundMail Is Nothing Then
-                outMailboxName = folder.Name
-                Set GetExistingMail = foundMail
-                Exit Function
+            Set sentItems = sentFolder.Items.Restrict(filter)
+            If Not sentItems Is Nothing Then
+                For Each itm In sentItems
+                    If IsMailItem(itm) Then
+                        outMailboxName = folder.Name
+                        Set GetExistingMail = itm
+                        Exit Function
+                    End If
+                Next itm
             End If
         End If
 
@@ -727,11 +783,17 @@ Function IsMailItem(item As Object) As Boolean
     On Error GoTo 0
 End Function
 
+' =====================================================
+' CHECK REPLY (Direct Targeted Search, No Caps)
+' =====================================================
 Function CheckReply(loadNo As String, ourMailbox As String) As String
 
     Dim app As Object, ns As Object
     Dim folder As Object, inboxFolder As Object
-    Dim replyStatus As String
+    Dim inboxItems As Object
+    Dim filter As String
+    Dim item As Object
+    Dim senderAddress As String
 
     loadNo = NormalizeLoadNo(loadNo)
     ourMailbox = LCase(Trim(ourMailbox))
@@ -744,6 +806,8 @@ Function CheckReply(loadNo As String, ourMailbox As String) As String
     Set app = CreateObject("Outlook.Application")
     Set ns = app.GetNamespace("MAPI")
 
+    filter = "@SQL=""urn:schemas:httpmail:subject"" LIKE '%" & loadNo & "%'"
+
     On Error Resume Next
     For Each folder In ns.Folders
         ' Skip non-mailbox root folders
@@ -753,13 +817,21 @@ Function CheckReply(loadNo As String, ourMailbox As String) As String
             GoTo NextFolder
         End If
 
-        Set inboxFolder = Nothing
         Set inboxFolder = folder.Folders("Inbox")
         If Not inboxFolder Is Nothing Then
-            replyStatus = FindReplyInFolder(inboxFolder, loadNo)
-            If replyStatus = "Reply Received" Then
-                CheckReply = "Reply Received"
-                Exit Function
+            Set inboxItems = inboxFolder.Items.Restrict(filter)
+            If Not inboxItems Is Nothing Then
+                For Each item In inboxItems
+                    If IsMailItem(item) Then
+                        senderAddress = GetSenderSmtpAddress(item)
+                        If senderAddress <> "" Then
+                            If Not IsOurSenderAddress(senderAddress) Then
+                                CheckReply = "Response Found"
+                                Exit Function
+                            End If
+                        End If
+                    End If
+                Next item
             End If
         End If
 
@@ -768,70 +840,6 @@ NextFolder:
     On Error GoTo 0
 
     CheckReply = "No Reply"
-End Function
-
-' Search a specific folder for an email with the load number in the subject by scanning the newest 1000 items
-Private Function FindMailInFolder(folder As Object, loadNo As String) As Object
-    Dim items As Object
-    Dim item As Object
-    Dim i As Long
-    Dim countToCheck As Long
-
-    Set FindMailInFolder = Nothing
-    If folder Is Nothing Then Exit Function
-
-    Set items = folder.Items
-    On Error Resume Next
-    items.Sort "[ReceivedTime]", True
-    On Error GoTo 0
-
-    countToCheck = items.Count
-    If countToCheck > 1000 Then countToCheck = 1000 ' Loop through the top 1000 newest items for performance
-
-    For i = 1 To countToCheck
-        Set item = items.Item(i)
-        If IsMailItem(item) Then
-            If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
-                Set FindMailInFolder = item
-                Exit Function
-            End If
-        End If
-    Next i
-End Function
-
-' Search a specific inbox folder for an inbound carrier reply (not sent by any of our mailboxes) matching the load number
-Private Function FindReplyInFolder(folder As Object, loadNo As String) As String
-    Dim items As Object
-    Dim item As Object
-    Dim i As Long
-    Dim countToCheck As Long
-    Dim senderAddress As String
-
-    FindReplyInFolder = "No Reply"
-    If folder Is Nothing Then Exit Function
-
-    Set items = folder.Items
-    On Error Resume Next
-    items.Sort "[ReceivedTime]", True
-    On Error GoTo 0
-
-    countToCheck = items.Count
-    If countToCheck > 1000 Then countToCheck = 1000
-
-    For i = 1 To countToCheck
-        Set item = items.Item(i)
-        If IsMailItem(item) Then
-            If InStr(1, item.Subject, loadNo, vbTextCompare) > 0 Then
-                senderAddress = GetSenderSmtpAddress(item)
-                If senderAddress <> "" Then
-                    If Not IsOurSenderAddress(senderAddress) Then
-                        FindReplyInFolder = "Reply Received"
-                        Exit Function
-                    End If
-                End If
-            End If
-        End If
-    Next i
 End Function
 
 Private Function GetSenderSmtpAddress(item As Object) As String
@@ -851,7 +859,7 @@ Private Function GetSenderSmtpAddress(item As Object) As String
         End If
     End If
 
-    if addr = "" Then addr = item.SenderEmailAddress
+    If addr = "" Then addr = item.SenderEmailAddress
     On Error GoTo 0
 
     GetSenderSmtpAddress = LCase(Trim(addr))
